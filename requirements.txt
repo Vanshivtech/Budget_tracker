@@ -1,12 +1,12 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-dotenv==1.0.1
-pydantic==2.9.2
-bcrypt==5.0.0
-pyjwt==2.14.0
-psycopg2-binary==2.9.13
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+bcrypt
+pyjwt
+psycopg2-binary
 
-langchain==0.3.7
-langgraph==0.2.45
-langchain-groq==0.2.1
+langchain
+langgraph
+langchain-groq
 
