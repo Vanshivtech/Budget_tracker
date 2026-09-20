@@ -1,0 +1,46 @@
+# Environments & Virtual Envs
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Sensitive Secrets & Credentials
+.env
+.env.*
+!.env.example
+service_account.json
+*.pem
+*.key
+
+# Local SQLite databases (legacy / development)
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Operating System & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Frontend / Node build artifacts (if applicable)
+node_modules/
+dist/
+build/
