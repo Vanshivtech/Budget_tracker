@@ -151,8 +151,27 @@ def health():
 
 # ---------- Frontend ----------
 
-# Mount static assets (CSS, JS, images)
+# Mount static assets (CSS, JS, images, manifest)
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+@app.get("/sw.js")
+def serve_sw():
+    """Serve the PWA service worker at the root domain."""
+    return FileResponse(
+        str(FRONTEND_DIR / "sw.js"),
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"}
+    )
+
+
+@app.get("/manifest.json")
+def serve_manifest():
+    """Serve the web app manifest."""
+    return FileResponse(
+        str(FRONTEND_DIR / "manifest.json"),
+        media_type="application/manifest+json"
+    )
 
 
 @app.get("/")

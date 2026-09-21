@@ -4,11 +4,11 @@ A multi-user, AI-powered personal finance web app built for cloud deployment. Tr
 
 ## Key Features
 
-- 🔐 **User Authentication**: Secure email + password signup and login, bcrypt password hashing, and signed JWT access tokens.
-- 👥 **Multi-User Isolation**: Every transaction and budget is strictly scoped to the authenticated user's ID at both the database and AI agent tool level.
-- ✏️ **Natural Language Edit & Delete**: Tell the assistant *"actually it was 650"* or *"delete the lunch expense"* — the agent finds the right entry and confirms changes accurately.
-- 📊 **Instant Budget Overview**: Live dashboard featuring monthly total spend, category cards sorted by spend with percentage badges and color-coded progress bars, and a recent transactions list.
-- ☁️ **Cloud-Ready Storage**: Powered by Supabase Postgres with connection pooling, ready for serverless and container hosts.
+- **User Authentication**: Secure email + password signup and login, bcrypt password hashing, and signed JWT access tokens.
+- **Multi-User Isolation**: Every transaction and budget is strictly scoped to the authenticated user's ID at both the database and AI agent tool level.
+- **Natural Language Edit & Delete**: Tell the assistant *"actually it was 650"* or *"delete the lunch expense"* — the agent finds the right entry and confirms changes accurately.
+- **Instant Budget Overview**: Live dashboard featuring monthly total spend, category cards sorted by spend with percentage badges and color-coded progress bars, and a recent transactions list.
+- **Cloud-Ready Storage**: Powered by Supabase Postgres with connection pooling, ready for serverless and container hosts.
 
 ---
 

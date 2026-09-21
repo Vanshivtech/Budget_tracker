@@ -21,19 +21,49 @@
 
     // Welcome banner HTML template for clean resets
     const WELCOME_BANNER_HTML = `
-        <div class="welcome-message" id="welcomeBanner">
+        <div class="welcome-message glass-card" id="welcomeBanner">
             <div class="welcome-avatar">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="currentColor"/>
+                <svg viewBox="0 0 48 48" width="36" height="36" fill="none">
+                    <defs>
+                        <linearGradient id="wbBrandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#06B6D4" />
+                            <stop offset="50%" stop-color="#10B981" />
+                            <stop offset="100%" stop-color="#3B82F6" />
+                        </linearGradient>
+                        <linearGradient id="wbSparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#22D3EE" />
+                            <stop offset="100%" stop-color="#34D399" />
+                        </linearGradient>
+                    </defs>
+                    <rect width="48" height="48" rx="12" fill="#0A111E" />
+                    <rect x="1" y="1" width="46" height="46" rx="11" stroke="url(#wbBrandGrad)" stroke-width="1.5" stroke-opacity="0.4" fill="none" />
+                    <path d="M 13 14 L 29 14" stroke="url(#wbBrandGrad)" stroke-width="4" stroke-linecap="round" />
+                    <path d="M 13 20.5 L 26 20.5" stroke="url(#wbBrandGrad)" stroke-width="4" stroke-linecap="round" />
+                    <path d="M 19 14 V 27 C 25.5 27 25.5 20.5 19 20.5" stroke="url(#wbBrandGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+                    <path d="M 19.5 26.5 L 30 38" stroke="url(#wbBrandGrad)" stroke-width="4.5" stroke-linecap="round" />
+                    <path d="M 37 4 L 38.8 8.5 L 43 10 L 38.8 11.5 L 37 16 L 35.2 11.5 L 31 10 L 35.2 8.5 Z" fill="url(#wbSparkGrad)" />
+                    <circle cx="37" cy="10" r="1.2" fill="#FFFFFF" />
                 </svg>
             </div>
-            <h3>Welcome to your Budget Assistant 👋</h3>
+            <h3>Welcome to your Budget Assistant</h3>
             <p>Track expenses, set budgets, or adjust transactions using everyday English. Try clicking an example below:</p>
             <div class="welcome-examples">
-                <button class="example-chip" data-message="spent 350 on lunch">🍜 "Spent 350 on lunch"</button>
-                <button class="example-chip" data-message="set food budget to 8000">📊 "Set food budget to 8000"</button>
-                <button class="example-chip" data-message="actually it was 400">✏️ "Actually it was 400"</button>
-                <button class="example-chip" data-message="how am I doing this month?">📈 "How am I doing this month?"</button>
+                <button class="example-chip" data-message="spent 350 on lunch">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+                    "Spent 350 on lunch"
+                </button>
+                <button class="example-chip" data-message="set food budget to 8000">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+                    "Set food budget to 8000"
+                </button>
+                <button class="example-chip" data-message="actually it was 400">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                    "Actually it was 400"
+                </button>
+                <button class="example-chip" data-message="how am I doing this month?">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                    "How am I doing this month?"
+                </button>
             </div>
         </div>
     `;
@@ -144,15 +174,15 @@
     };
 
     const CATEGORY_ICONS = {
-        food: "🍜",
-        groceries: "🛒",
-        travel: "🚗",
-        rent: "🏠",
-        bills: "📄",
-        shopping: "🛍️",
-        health: "💊",
-        entertainment: "🎬",
-        other: "💳"
+        food: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>`,
+        groceries: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>`,
+        travel: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.5 2.8C2.1 10.9 2 11.2 2 11.5V16c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>`,
+        rent: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+        bills: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`,
+        shopping: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>`,
+        health: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>`,
+        entertainment: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>`,
+        other: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`
     };
 
     // ---------- Formatters & Helpers ----------
@@ -214,6 +244,8 @@
     function resetOverviewUI() {
         overviewMonth.textContent = "";
         totalSpent.textContent = "₹0";
+        const mobileSummaryPill = document.getElementById("mobileSummaryPill");
+        if (mobileSummaryPill) mobileSummaryPill.textContent = "₹0";
         totalBudget.textContent = "";
         categoryList.innerHTML = "";
         recentList.innerHTML = "";
@@ -408,7 +440,7 @@
         item.className = "recent-item";
 
         const cat = (tx.category || "other").toLowerCase();
-        const icon = CATEGORY_ICONS[cat] || "💳";
+        const icon = CATEGORY_ICONS[cat] || CATEGORY_ICONS.other;
         const relDate = formatRelativeDate(tx.date);
 
         item.innerHTML = `
@@ -454,14 +486,14 @@
             const chip = document.createElement("button");
             chip.className = "action-chip context-warning";
             chip.dataset.message = `Why is ${topOver.category} over budget?`;
-            chip.innerHTML = `⚠️ Why is ${topOver.category} over budget?`;
+            chip.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Why is ${topOver.category} over budget?`;
             quickActions.appendChild(chip);
         } else if (nearBudgetCats.length > 0) {
             const topNear = nearBudgetCats[0];
             const chip = document.createElement("button");
             chip.className = "action-chip";
             chip.dataset.message = `How much is left in my ${topNear.category} budget?`;
-            chip.innerHTML = `📊 Check ${topNear.category} balance`;
+            chip.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Check ${topNear.category} balance`;
             quickActions.appendChild(chip);
         }
 
@@ -491,8 +523,12 @@
 
             overviewMonth.textContent = monthLabel(data.month);
 
-            // Total Hero Card
+            // Total Hero Card & Mobile Pill
             totalSpent.textContent = formatCurrency(data.total_spent);
+            const mobileSummaryPill = document.getElementById("mobileSummaryPill");
+            if (mobileSummaryPill) {
+                mobileSummaryPill.textContent = formatCurrency(data.total_spent);
+            }
             if (data.total_budget) {
                 const totalPct = Math.round((data.total_spent / data.total_budget) * 100);
                 totalBudget.textContent = `of ${formatCurrency(data.total_budget)} total budget (${totalPct}%)`;
@@ -512,7 +548,9 @@
             } else {
                 emptyState.style.display = "none";
                 categoriesSection.style.display = "flex";
+                categoriesSection.style.flexDirection = "column";
                 recentSection.style.display = "flex";
+                recentSection.style.flexDirection = "column";
 
                 // Render categories
                 data.categories.forEach(item => {
@@ -558,8 +596,25 @@
         if (role === "user") {
             avatar.textContent = "Y";
         } else {
-            avatar.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="currentColor"/>
+            avatar.innerHTML = `<svg viewBox="0 0 48 48" width="18" height="18" fill="none">
+                <defs>
+                    <linearGradient id="botBrandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#06B6D4" />
+                        <stop offset="50%" stop-color="#10B981" />
+                        <stop offset="100%" stop-color="#3B82F6" />
+                    </linearGradient>
+                    <linearGradient id="botSparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#22D3EE" />
+                        <stop offset="100%" stop-color="#34D399" />
+                    </linearGradient>
+                </defs>
+                <rect width="48" height="48" rx="12" fill="#0A111E" />
+                <path d="M 13 14 L 29 14" stroke="url(#botBrandGrad)" stroke-width="4" stroke-linecap="round" />
+                <path d="M 13 20.5 L 26 20.5" stroke="url(#botBrandGrad)" stroke-width="4" stroke-linecap="round" />
+                <path d="M 19 14 V 27 C 25.5 27 25.5 20.5 19 20.5" stroke="url(#botBrandGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+                <path d="M 19.5 26.5 L 30 38" stroke="url(#botBrandGrad)" stroke-width="4.5" stroke-linecap="round" />
+                <path d="M 37 4 L 38.8 8.5 L 43 10 L 38.8 11.5 L 37 16 L 35.2 11.5 L 31 10 L 35.2 8.5 Z" fill="url(#botSparkGrad)" />
+                <circle cx="37" cy="10" r="1.2" fill="#FFFFFF" />
             </svg>`;
         }
 
@@ -583,8 +638,25 @@
         avatar.style.background = "var(--bg-elevated)";
         avatar.style.color = "var(--text-secondary)";
         avatar.style.border = "1px solid var(--border-subtle)";
-        avatar.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="currentColor"/>
+        avatar.innerHTML = `<svg viewBox="0 0 48 48" width="18" height="18" fill="none">
+            <defs>
+                <linearGradient id="typBrandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#06B6D4" />
+                    <stop offset="50%" stop-color="#10B981" />
+                    <stop offset="100%" stop-color="#3B82F6" />
+                </linearGradient>
+                <linearGradient id="typSparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#22D3EE" />
+                    <stop offset="100%" stop-color="#34D399" />
+                </linearGradient>
+            </defs>
+            <rect width="48" height="48" rx="12" fill="#0A111E" />
+            <path d="M 13 14 L 29 14" stroke="url(#typBrandGrad)" stroke-width="4" stroke-linecap="round" />
+            <path d="M 13 20.5 L 26 20.5" stroke="url(#typBrandGrad)" stroke-width="4" stroke-linecap="round" />
+            <path d="M 19 14 V 27 C 25.5 27 25.5 20.5 19 20.5" stroke="url(#typBrandGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+            <path d="M 19.5 26.5 L 30 38" stroke="url(#typBrandGrad)" stroke-width="4.5" stroke-linecap="round" />
+            <path d="M 37 4 L 38.8 8.5 L 43 10 L 38.8 11.5 L 37 16 L 35.2 11.5 L 31 10 L 35.2 8.5 Z" fill="url(#typSparkGrad)" />
+            <circle cx="37" cy="10" r="1.2" fill="#FFFFFF" />
         </svg>`;
 
         const bubble = document.createElement("div");
@@ -713,4 +785,16 @@
         mainApp.style.display = "none";
     }
 
+    // ---------- PWA Service Worker Registration ----------
+    if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+            navigator.serviceWorker.register("/sw.js").catch(() => {
+                navigator.serviceWorker.register("/static/sw.js").catch(err => {
+                    console.warn("[SW] Registration notice:", err);
+                });
+            });
+        });
+    }
+
 })();
+

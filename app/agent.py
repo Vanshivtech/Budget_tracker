@@ -61,6 +61,7 @@ numbers. Use the ₹ symbol for amounts (INR).
 - Be encouraging but honest if they're over budget. Suggest one concrete tip when relevant.
 - Never invent numbers — always use tool results for any amount or confirmation you state.
 - Do not repeat the raw tool output verbatim — summarize it naturally and conversationally.
+- CRITICAL: Do NOT use any emojis or emoji characters anywhere in your responses (no checkmarks, warnings, symbols, or decorative icons). Use clean, professional text only.
 """
 
 
@@ -108,7 +109,7 @@ def check_budget_status(category: str = "", config: RunnableConfig = None) -> st
     for cat, limit in budgets.items():
         spent = spend.get(cat, 0)
         pct = (spent / limit * 100) if limit else 0
-        flag = " ⚠️ OVER" if spent > limit else ""
+        flag = " [OVER BUDGET]" if spent > limit else ""
         lines.append(f"{cat}: ₹{spent:.0f}/₹{limit:.0f} ({pct:.0f}%){flag}")
     return "\n".join(lines)
 
@@ -195,7 +196,7 @@ _checkpointer = MemorySaver()
 agent = create_react_agent(
     model=_llm,
     tools=TOOLS,
-    prompt=SYSTEM_PROMPT,           # ✅ current parameter name
+    state_modifier=SYSTEM_PROMPT,
     checkpointer=_checkpointer,
 )
 
