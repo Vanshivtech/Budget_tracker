@@ -1,8 +1,10 @@
 """
-The AI agent: a LangGraph ReAct-style agent with tools for logging expenses,
-checking/setting budgets, summarizing spend, and editing/deleting expenses.
-Multi-user scoped: user_id is injected securely from the authenticated session
-via config/context and is never exposed to the LLM or client tampering.
+The AI agent: a LangGraph ReAct-style agent powering ABT — AI Budget Tracker.
+Tools cover expense logging, budget management, income tracking, savings goals,
+user profile, and a holistic financial snapshot.
+
+Multi-user scoped: user_id is injected from the authenticated session via
+RunnableConfig and contextvar — never exposed to the LLM or client.
 """
 import contextvars
 from langchain_core.tools import tool
@@ -31,63 +33,83 @@ def _get_user_id(config: RunnableConfig | None) -> int:
 
 
 SYSTEM_PROMPT = """\
-You are a friendly, concise personal finance assistant. The user logs expenses, \
-sets budgets, asks about spending, and corrects or removes transactions through you.
+You are ABT, a friendly and concise AI money companion for AI Budget Tracker. You help users track \
+expenses, manage budgets, log income, build savings goals, and develop better \
+money habits. You give personalised insights grounded entirely in the user's \
+own data from tools — you never invent numbers.
 
-Rules:
-- When the user mentions spending money (e.g. "spent 500 on groceries", "300 for uber"), \
-call log_expense with a sensible category (food, groceries, travel, rent, bills, \
-entertainment, shopping, health, other, etc.) — infer the category from context, ask only \
-if truly ambiguous.
-- When the user asks to set a budget ("set food budget to 10000"), call set_budget.
-- When the user asks how they're doing / how much they've spent / budget status, call \
-check_budget_status.
-- When the user wants a full monthly summary/breakdown, call get_monthly_summary.
-- When the user wants to correct, edit, or adjust an expense (e.g. "actually it was 650", \
-"change the last food expense to groceries", "edit dinner to 400"):
-  1. Call get_recent_expenses to view their recent transactions.
-  2. Locate the intended transaction. If there are multiple plausible matches, ask the user \
-which one they mean by listing the candidate IDs, amounts, and notes instead of guessing.
-  3. Once identified, call update_expense with the transaction_id and the updated fields.
-  4. Confirm the update using the actual updated values returned by the tool result, never from assumption.
-- When the user asks to delete or remove an expense (e.g. "delete the food expense", \
-"remove the last coffee expense"):
-  1. Call get_recent_expenses to locate the transaction.
-  2. If more than one plausible match exists, ask which one instead of guessing.
-  3. Call delete_expense with the transaction_id.
-  4. Confirm deletion based on the tool result.
-- Keep replies SHORT — this is a chat app, not an essay. Use at most 2-3 short lines plus \
-numbers. Use the ₹ symbol for amounts (INR).
-- Be encouraging but honest if they're over budget. Suggest one concrete tip when relevant.
-- Never invent numbers — always use tool results for any amount or confirmation you state.
-- Do not repeat the raw tool output verbatim — summarize it naturally and conversationally.
-- CRITICAL: Do NOT use any emojis or emoji characters anywhere in your responses (no checkmarks, warnings, symbols, or decorative icons). Use clean, professional text only.
+== CORE BEHAVIOUR ==
+- When the user mentions spending money, call log_expense.
+- When they mention receiving money (salary, freelance, etc.), call add_income.
+- When they ask to set a budget, call set_budget.
+- When they ask about budget/spend status, call check_budget_status or \
+get_monthly_summary.
+- When they ask for a weekly recap or how their week went, call get_weekly_recap.
+- When they ask about their financial health, savings rate, or how much they \
+can spend, call get_financial_snapshot. Use the numbers it returns exactly.
+- When they set a savings goal (e.g. "I want to save for a phone"), call \
+set_savings_goal. Always confirm the target, saved-so-far, and deadline before saving.
+- When they contribute to a goal ("I saved 2000 for my trip"), call \
+contribute_to_goal using the goal id from get_goals.
+- When investing or insurance comes up, you may explain how financial \
+instruments work (FDs, RDs, PPF, NPS, SIPs, index funds, mutual funds, gold, \
+term insurance) and share general principles. Always add this one line: \
+"Note: this is general financial education, not personalised investment advice — \
+a SEBI-registered investment adviser can give you that." 
+- If asked "which fund/stock/crypto should I buy", do NOT name any specific \
+product. Instead explain how to evaluate options (expense ratio, track record, \
+risk profile, investment horizon, fund type) and direct them to SEBI's RIA \
+search at https://www.sebi.gov.in/sebiweb/other/OtherAction.do?doRecognisedFip=yes
+- General principles you may always share: build an emergency fund first \
+(3-6 months expenses), clear high-interest debt before investing, insure \
+before investing, invest only surplus, match investment horizon to risk comfort, \
+diversify across asset classes.
+- When asked about current interest rates or returns, say "please check current \
+rates at the institution's website or RBI/SEBI publications — I don't have \
+live rate data."
+- Never give tax-filing specifics; refer users to a CA for that.
+- Never predict or promise investment returns.
+- Never present yourself as SEBI-registered.
+- Ask the user for their current savings and risk comfort ONLY when it is \
+genuinely needed for guidance (e.g. emergency fund calculation, investment \
+horizon advice) AND only if you have not already recorded it via update_profile. \
+Never ask repeatedly.
+- When editing or deleting a past expense: call get_recent_expenses first, \
+confirm the right transaction, then call update_expense or delete_expense.
+- Keep replies SHORT — 2-4 lines plus numbers. Use the Rs symbol (Rs) for \
+amounts in INR.
+- Do NOT use any emojis or emoji characters anywhere in your responses.
+- Never repeat raw tool output verbatim — summarise it conversationally.
+- Never invent numbers — every figure must come from a tool result.
 """
 
 
+# ======================================================================
+# TOOLS — Expenses & Budgets
+# ======================================================================
+
 @tool
 def log_expense(amount: float, category: str, note: str = "", config: RunnableConfig = None) -> str:
-    """Log a new expense. amount is a positive number, category is a short word
-    like 'food', 'travel', 'rent', 'shopping', 'bills', 'entertainment', 'health',
-    'groceries', or 'other'. note is an optional short description."""
+    """Log a new expense. amount is a positive number. category is a short word:
+    food, groceries, travel, rent, bills, entertainment, shopping, health, other.
+    note is an optional short description."""
     user_id = _get_user_id(config)
     record = db.log_transaction(user_id=user_id, amount=amount, category=category.lower().strip(), note=note)
-    return f"Logged ₹{amount:.0f} under '{category.lower().strip()}' (Transaction ID: {record['id']})."
+    return f"Logged Rs {amount:.0f} under '{category.lower().strip()}' (ID: {record['id']})."
 
 
 @tool
 def set_budget(category: str, monthly_limit: float, config: RunnableConfig = None) -> str:
-    """Set (or update) the monthly budget limit for a category."""
+    """Set or update the monthly budget limit for a spending category."""
     user_id = _get_user_id(config)
     db.set_budget(user_id=user_id, category=category, monthly_limit=monthly_limit)
-    return f"Budget for '{category.lower().strip()}' set to ₹{monthly_limit:.0f}/month."
+    return f"Budget for '{category.lower().strip()}' set to Rs {monthly_limit:.0f}/month."
 
 
 @tool
 def check_budget_status(category: str = "", config: RunnableConfig = None) -> str:
-    """Check spend vs budget for the current month. If category is empty,
-    returns status for ALL categories that have a budget set. If category is
-    given, returns just that one."""
+    """Check spend vs budget for the current month. If category is empty, returns
+    status for ALL categories that have a budget set."""
     user_id = _get_user_id(config)
     month = db.current_month()
     spend = db.spend_by_category(user_id, month)
@@ -98,35 +120,43 @@ def check_budget_status(category: str = "", config: RunnableConfig = None) -> st
         limit = budgets.get(category)
         spent = spend.get(category, 0)
         if limit is None:
-            return f"No budget set for '{category}'. You've spent ₹{spent:.0f} on it this month."
+            return f"No budget set for '{category}'. You've spent Rs {spent:.0f} on it this month."
         pct = (spent / limit * 100) if limit else 0
-        return f"{category}: ₹{spent:.0f} / ₹{limit:.0f} ({pct:.0f}%) this month."
+        return f"{category}: Rs {spent:.0f} / Rs {limit:.0f} ({pct:.0f}%) this month."
 
     if not budgets:
-        return "No budgets set yet. Total spend this month: ₹%.0f" % sum(spend.values())
+        return "No budgets set yet. Total spend this month: Rs %.0f" % sum(spend.values())
 
     lines = []
     for cat, limit in budgets.items():
         spent = spend.get(cat, 0)
         pct = (spent / limit * 100) if limit else 0
         flag = " [OVER BUDGET]" if spent > limit else ""
-        lines.append(f"{cat}: ₹{spent:.0f}/₹{limit:.0f} ({pct:.0f}%){flag}")
+        lines.append(f"{cat}: Rs {spent:.0f}/Rs {limit:.0f} ({pct:.0f}%){flag}")
     return "\n".join(lines)
 
 
 @tool
 def get_monthly_summary(config: RunnableConfig = None) -> str:
-    """Get a full breakdown of this month's spending by category, including
-    categories with no budget set, plus the total."""
+    """Full breakdown of this month's spending by category including totals."""
     user_id = _get_user_id(config)
     month = db.current_month()
     spend = db.spend_by_category(user_id, month)
     if not spend:
         return "No transactions logged this month yet."
     total = sum(spend.values())
-    lines = [f"{cat}: ₹{amt:.0f}" for cat, amt in sorted(spend.items(), key=lambda x: -x[1])]
-    lines.append(f"Total: ₹{total:.0f}")
+    lines = [f"{cat}: Rs {amt:.0f}" for cat, amt in sorted(spend.items(), key=lambda x: -x[1])]
+    lines.append(f"Total: Rs {total:.0f}")
     return "\n".join(lines)
+
+
+@tool
+def get_weekly_recap(config: RunnableConfig = None) -> str:
+    """Weekly spending recap for the last 7 days: total spent, comparison to prior week,
+    top expense category, income, and active logging streak."""
+    user_id = _get_user_id(config)
+    recap = db.get_weekly_recap(user_id=user_id)
+    return recap.get("narration") or f"Total spent over the past 7 days: Rs {recap['total_spent']:.0f}."
 
 
 @tool
@@ -136,11 +166,10 @@ def get_recent_expenses(limit: int = 10, config: RunnableConfig = None) -> str:
     txs = db.get_recent_expenses(user_id=user_id, limit=limit)
     if not txs:
         return "No recent transactions found."
-
     lines = []
     for t in txs:
         note_str = f" | Note: {t['note']}" if t.get("note") else ""
-        lines.append(f"ID #{t['id']}: ₹{t['amount']:.0f} ({t['category']}) on {t['date'][:10]}{note_str}")
+        lines.append(f"ID #{t['id']}: Rs {t['amount']:.0f} ({t['category']}) on {t['date'][:10]}{note_str}")
     return "\n".join(lines)
 
 
@@ -152,19 +181,14 @@ def update_expense(
     note: str | None = None,
     config: RunnableConfig = None,
 ) -> str:
-    """Update an existing expense by transaction_id. Only provides fields that should be changed."""
+    """Update an existing expense by transaction_id. Only provide fields to change."""
     user_id = _get_user_id(config)
-    updated = db.update_expense(
-        user_id=user_id,
-        transaction_id=transaction_id,
-        amount=amount,
-        category=category,
-        note=note,
-    )
+    updated = db.update_expense(user_id=user_id, transaction_id=transaction_id,
+                                amount=amount, category=category, note=note)
     if not updated:
         return f"Could not find transaction #{transaction_id} to update."
     note_display = f" (note: '{updated['note']}')" if updated.get("note") else ""
-    return f"Updated transaction #{transaction_id}: ₹{updated['amount']:.0f} under '{updated['category']}'{note_display}."
+    return f"Updated #{transaction_id}: Rs {updated['amount']:.0f} under '{updated['category']}'{note_display}."
 
 
 @tool
@@ -173,18 +197,198 @@ def delete_expense(transaction_id: int, config: RunnableConfig = None) -> str:
     user_id = _get_user_id(config)
     success = db.delete_expense(user_id=user_id, transaction_id=transaction_id)
     if success:
-        return f"Successfully deleted transaction #{transaction_id}."
+        return f"Deleted transaction #{transaction_id}."
     return f"Transaction #{transaction_id} not found or already deleted."
 
 
+# ======================================================================
+# TOOLS — Income
+# ======================================================================
+
+@tool
+def add_income(
+    amount: float,
+    source: str = "salary",
+    entry_date: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """Log an income entry. amount is positive. source is a short label like
+    'salary', 'freelance', 'interest', 'rental', 'other'.
+    entry_date is optional YYYY-MM-DD; defaults to today."""
+    user_id = _get_user_id(config)
+    entry = db.add_income_entry(
+        user_id=user_id,
+        amount=amount,
+        source=source.strip() or "salary",
+        entry_date=entry_date or None,
+    )
+    return f"Logged income of Rs {amount:.0f} from '{entry['source']}'."
+
+
+@tool
+def get_income_summary(month: str = "", config: RunnableConfig = None) -> str:
+    """Return total income for a given month (YYYY-MM). Defaults to current month."""
+    user_id = _get_user_id(config)
+    target_month = month.strip() or db.current_month()
+    data = db.get_income_summary(user_id=user_id, month=target_month)
+    if not data["total"]:
+        return f"No income logged for {target_month}."
+    lines = [f"Total income ({target_month}): Rs {data['total']:.0f}"]
+    for src, amt in data["by_source"].items():
+        lines.append(f"  {src}: Rs {amt:.0f}")
+    return "\n".join(lines)
+
+
+# ======================================================================
+# TOOLS — Savings Goals
+# ======================================================================
+
+@tool
+def set_savings_goal(
+    name: str,
+    target_amount: float,
+    target_date: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """Create or update a savings goal. name is a short label (e.g. 'Emergency fund',
+    'New phone'). target_amount is the total amount to reach. target_date is optional
+    YYYY-MM-DD deadline."""
+    user_id = _get_user_id(config)
+    goal = db.set_savings_goal(
+        user_id=user_id,
+        name=name.strip(),
+        target_amount=target_amount,
+        target_date=target_date or None,
+    )
+    summary = f"Goal '{goal['name']}' set: Rs {goal['target_amount']:.0f} target."
+    if goal.get("months_left") is not None:
+        summary += f" {goal['months_left']} months to deadline."
+    if goal.get("required_monthly") is not None:
+        summary += f" Need to save Rs {goal['required_monthly']:.0f}/month."
+    return summary
+
+
+@tool
+def contribute_to_goal(goal_id: int, amount: float, config: RunnableConfig = None) -> str:
+    """Add an amount to a savings goal's saved_amount. Use get_goals to find the
+    goal_id first."""
+    user_id = _get_user_id(config)
+    updated = db.contribute_to_goal(user_id=user_id, goal_id=goal_id, amount=amount)
+    if not updated:
+        return f"Goal #{goal_id} not found."
+    return (
+        f"Added Rs {amount:.0f} to '{updated['name']}'. "
+        f"Progress: Rs {updated['saved_amount']:.0f} / Rs {updated['target_amount']:.0f} "
+        f"({updated['pct_complete']}%). Remaining: Rs {updated['remaining']:.0f}."
+    )
+
+
+@tool
+def get_goals(config: RunnableConfig = None) -> str:
+    """List all savings goals with progress, required monthly saving, and pace."""
+    user_id = _get_user_id(config)
+    goals = db.get_goals(user_id=user_id)
+    if not goals:
+        return "No savings goals set yet."
+    lines = []
+    for g in goals:
+        line = (
+            f"#{g['id']} '{g['name']}': Rs {g['saved_amount']:.0f}/"
+            f"Rs {g['target_amount']:.0f} ({g['pct_complete']}%)"
+        )
+        if g.get("required_monthly") is not None:
+            line += f" — need Rs {g['required_monthly']:.0f}/month"
+        if g.get("months_left") is not None:
+            line += f" ({g['months_left']} months left)"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ======================================================================
+# TOOLS — Profile & Snapshot
+# ======================================================================
+
+@tool
+def update_profile(
+    current_savings: float | None = None,
+    risk_comfort: str | None = None,
+    config: RunnableConfig = None,
+) -> str:
+    """Update the user's financial profile. current_savings is total savings in Rs.
+    risk_comfort is 'low', 'medium', or 'high'. Provide only fields to update."""
+    user_id = _get_user_id(config)
+    if risk_comfort and risk_comfort not in ("low", "medium", "high"):
+        return "risk_comfort must be 'low', 'medium', or 'high'."
+    profile = db.update_user_profile(
+        user_id=user_id,
+        current_savings=current_savings,
+        risk_comfort=risk_comfort,
+    )
+    parts = []
+    if profile.get("current_savings") is not None:
+        parts.append(f"current savings: Rs {profile['current_savings']:.0f}")
+    if profile.get("risk_comfort"):
+        parts.append(f"risk comfort: {profile['risk_comfort']}")
+    return f"Profile updated — {', '.join(parts)}." if parts else "Profile updated."
+
+
+@tool
+def get_financial_snapshot(config: RunnableConfig = None) -> str:
+    """
+    Returns a full financial snapshot for the current month:
+    income, expenses, net surplus, savings rate, budget adherence,
+    emergency fund coverage (months), safe-to-spend today, and goal pace.
+    Use this when the user asks about their overall financial health.
+    """
+    user_id = _get_user_id(config)
+    snap = db.get_financial_snapshot(user_id=user_id)
+
+    lines = [f"Financial snapshot — {snap['month']}:"]
+    lines.append(f"Income: Rs {snap['monthly_income']:.0f}  |  Expenses: Rs {snap['monthly_expenses']:.0f}  |  Surplus: Rs {snap['net_surplus']:.0f}")
+
+    if snap["savings_rate_pct"] is not None:
+        lines.append(f"Savings rate: {snap['savings_rate_pct']}%")
+    if snap["budget_adherence_pct"] is not None:
+        lines.append(f"Budget adherence: {snap['budget_adherence_pct']}% of categories within limit")
+    if snap["emergency_months"] is not None:
+        lines.append(f"Emergency fund: {snap['emergency_months']} months of expenses covered")
+    if snap["safe_to_spend_today"] is not None:
+        lines.append(f"Safe to spend today: Rs {snap['safe_to_spend_today']:.0f} (remaining budget / days left)")
+
+    if snap["goals"]:
+        lines.append("Goals:")
+        for g in snap["goals"]:
+            pace_str = f" [{g['pace']}]" if g.get("pace") else ""
+            req = f" (need Rs {g['required_monthly']:.0f}/month)" if g.get("required_monthly") else ""
+            lines.append(f"  '{g['name']}': {g['pct_complete']}% complete{req}{pace_str}")
+
+    return "\n".join(lines)
+
+
+# ======================================================================
+# TOOL REGISTRY & AGENT
+# ======================================================================
+
 TOOLS = [
+    # Expenses
     log_expense,
     set_budget,
     check_budget_status,
     get_monthly_summary,
+    get_weekly_recap,
     get_recent_expenses,
     update_expense,
     delete_expense,
+    # Income
+    add_income,
+    get_income_summary,
+    # Goals
+    set_savings_goal,
+    contribute_to_goal,
+    get_goals,
+    # Profile & Snapshot
+    update_profile,
+    get_financial_snapshot,
 ]
 
 _llm = ChatGroq(
@@ -202,8 +406,7 @@ agent = create_react_agent(
 
 
 def handle_user_message(user_id: int, session_id: str, text: str) -> str:
-    """Run the agent for an authenticated user on one incoming message.
-    session_id and user_id are combined as thread_id for conversation state."""
+    """Run the agent for an authenticated user on one incoming message."""
     thread_id = f"user_{user_id}_{session_id}"
     token = _current_user_var.set(user_id)
     try:
@@ -215,6 +418,6 @@ def handle_user_message(user_id: int, session_id: str, text: str) -> str:
         }
         result = agent.invoke({"messages": [("user", text)]}, config=config)
         last_message = result["messages"][-1]
-        return last_message.content or "Sorry, I couldn't process that — try rephrasing?"
+        return last_message.content or "Sorry, I could not process that — try rephrasing?"
     finally:
         _current_user_var.reset(token)

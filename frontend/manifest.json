@@ -1,14 +1,14 @@
 {
-  "name": "Budget Tracker — AI Assistant",
-  "short_name": "BudgetAI",
-  "description": "Personal AI Budget Tracker & Savings Assistant",
+  "name": "ABT — AI Budget Tracker",
+  "short_name": "ABT",
+  "description": "ABT — AI Budget Tracker. Track expenses, grow savings, and build good money habits.",
   "start_url": "/",
   "id": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#070B11",
-  "theme_color": "#070B11",
+  "background_color": "#0A0A0F",
+  "theme_color": "#0A0A0F",
   "icons": [
     {
       "src": "/static/icon-192.png",
