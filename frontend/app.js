@@ -104,6 +104,57 @@
     }, 3500);
   }
 
+  // ---------- Theme Management ----------
+  function getPreferredTheme() {
+    const saved = localStorage.getItem('abt_theme');
+    if (saved) return saved;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      ? 'light'
+      : 'dark';
+  }
+
+  function applyTheme(theme, save = true) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const meta = $('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'light' ? '#F4F6F8' : '#0B0D11');
+    if (save) {
+      try {
+        localStorage.setItem('abt_theme', theme);
+      } catch (e) {}
+    }
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || getPreferredTheme();
+    const next = current === 'light' ? 'dark' : 'light';
+    applyTheme(next, true);
+  }
+
+  function initTheme() {
+    const initial = getPreferredTheme();
+    applyTheme(initial, false);
+
+    ['#theme-toggle', '#theme-toggle-mobile', '#theme-toggle-auth'].forEach((sel) => {
+      const btn = $(sel);
+      if (btn) {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          toggleTheme();
+        });
+      }
+    });
+
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('abt_theme')) {
+          applyTheme(e.matches ? 'light' : 'dark', false);
+        }
+      });
+    }
+  }
+
+  initTheme();
+
   function formatCurrency(n) {
     if (n == null || isNaN(n)) return '--';
     return new Intl.NumberFormat('en-IN', {
@@ -384,7 +435,11 @@
     }
 
     // Insert before typing indicator
-    messageListInner.appendChild(msgEl);
+    if (typingIndicator && typingIndicator.parentNode === messageListInner) {
+      messageListInner.insertBefore(msgEl, typingIndicator);
+    } else {
+      messageListInner.appendChild(msgEl);
+    }
     scrollToBottom();
   }
 
@@ -478,15 +533,20 @@
     dashboardContent.style.display = 'none';
 
     try {
-      const [summary, dashboard, snapshot, insightsData] = await Promise.all([
+      const [summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData] = await Promise.all([
         api('/api/summary'),
         api('/api/dashboard'),
         api('/api/snapshot').catch(() => null),
         api('/api/insights').catch(() => null),
+        api('/api/health-score').catch(() => null),
+        api('/api/recurring').catch(() => ({ recurring: [] })),
+        api('/api/recurring/reminders').catch(() => ({ reminders: [] })),
+        api('/api/budgets/rollover').catch(() => ({ budgets: {} })),
       ]);
 
-      renderDashboard(summary, dashboard, snapshot, insightsData);
+      renderDashboard(summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData);
     } catch (err) {
+      console.error('loadDashboard error:', err);
       dashboardContent.innerHTML =
         '<div class="empty-state"><p>Could not load dashboard data.</p></div>';
       dashboardContent.style.display = '';
@@ -516,7 +576,7 @@
     requestAnimationFrame(tick);
   }
 
-  function renderDashboard(summary, dashboard, snapshot, insightsData) {
+  function renderDashboard(summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData) {
     const totalSpent = summary.total_spent || dashboard.total_spent || 0;
     const totalBudget = summary.total_budget || dashboard.total_budget || 0;
     const txnCount = (summary.recent_transactions || []).length;
@@ -524,13 +584,18 @@
 
     // Parse categories from either summary or dashboard format
     const rawCategories = summary.categories || dashboard.categories || summary.category_breakdown || [];
+    const rolloverMap = (rolloverData && rolloverData.budgets) || {};
+
     const categoryBreakdown = rawCategories
       .map((c) => ({
         category: c.category || '',
         total: typeof c.spent === 'number' ? c.spent : (typeof c.total === 'number' ? c.total : 0),
         budget: typeof c.budget === 'number' ? c.budget : 0,
+        base_budget: typeof c.base_budget === 'number' ? c.base_budget : (typeof c.budget === 'number' ? c.budget : 0),
+        rollover_enabled: typeof c.rollover_enabled === 'boolean' ? c.rollover_enabled : !!(rolloverMap[c.category?.toLowerCase()]?.rollover_enabled),
+        carried_amount: typeof c.carried_amount === 'number' ? c.carried_amount : (rolloverMap[c.category?.toLowerCase()]?.carried_amount || 0),
       }))
-      .filter((c) => c.total > 0)
+      .filter((c) => c.total > 0 || c.budget > 0)
       .sort((a, b) => b.total - a.total);
 
     // Build budgets map
@@ -562,7 +627,7 @@
       savingsRate = 0;
     }
 
-    // Potential savings: computed strictly from user's actual spending data
+    // Potential savings
     const discCats = ['eating out', 'shopping', 'entertainment', 'personal care', 'miscellaneous', 'food'];
     const discSpend = categoryBreakdown
       .filter((c) => discCats.includes(c.category.toLowerCase()))
@@ -571,7 +636,7 @@
     let potentialSavings = 0;
     let potentialSub = 'Identified opportunities';
     if (discSpend > 0) {
-      potentialSavings = Math.round(discSpend * 0.15); // 15% trim opportunity
+      potentialSavings = Math.round(discSpend * 0.15);
       potentialSub = '15% trim on discretionary';
     } else {
       const overruns = categoryBreakdown
@@ -620,6 +685,26 @@
 
     let html = '';
 
+    // 0. Bill Reminder Banner (if any bills due in <= 2 days)
+    if (remindersData && remindersData.reminders && remindersData.reminders.length > 0) {
+      const r = remindersData.reminders[0];
+      const dueStr = r.days_until_due === 0 ? 'due today' : (r.days_until_due === 1 ? 'due tomorrow' : 'due in 2 days');
+      html += `
+        <div class="bill-reminder-banner">
+          <div class="bill-reminder-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+          </div>
+          <div class="bill-reminder-info">
+            <strong>Upcoming Bill:</strong> ${escapeHtml(r.name)} (${formatCurrency(r.amount)}) is ${dueStr} (${formatDate(r.next_due_date)}).
+          </div>
+          <button class="bill-reminder-action" id="banner-view-bills-btn">View Bills</button>
+        </div>
+      `;
+    }
+
     // 1. Dashboard Header
     html += `
       <div class="dashboard-header">
@@ -627,14 +712,24 @@
           <h1>Dashboard</h1>
           <p>Personal financial health and monthly expense breakdown</p>
         </div>
-        <div class="dashboard-period-badge">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-            <line x1="16" y1="2" x2="16" y2="6"/>
-            <line x1="8" y1="2" x2="8" y2="6"/>
-            <line x1="3" y1="10" x2="21" y2="10"/>
-          </svg>
-          <span>This Month</span>
+        <div class="dashboard-header-actions">
+          <button class="btn-export-statement" id="btn-open-export">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export Statement
+          </button>
+          <div class="dashboard-period-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <span>This Month</span>
+          </div>
         </div>
       </div>
     `;
@@ -723,7 +818,63 @@
 
     html += '</div>'; // close stat-cards-row
 
-    // 3. AI Insight Callout Card
+    // 3. Financial Health Score Card
+    if (healthScore && typeof healthScore.score === 'number') {
+      const tierClass = healthScore.tier === 'Excellent' ? 'excellent' : (healthScore.tier === 'Good' ? 'good' : (healthScore.tier === 'Fair' ? 'fair' : 'attention'));
+      const partialBadge = healthScore.is_partial ? '<span class="partial-score-badge">Partial</span>' : '';
+
+      let factorsHtml = '';
+      (healthScore.factors || []).forEach((f) => {
+        const factorPct = Math.max(5, Math.min(100, f.score));
+        factorsHtml += `
+          <div class="health-factor-item">
+            <div class="health-factor-top">
+              <span class="health-factor-name">${escapeHtml(f.name)}</span>
+              <span class="health-factor-metric">${escapeHtml(f.raw_metric || '')} <strong class="health-factor-score">${f.score}/100</strong></span>
+            </div>
+            <div class="health-factor-bar-bg">
+              <div class="health-factor-bar-fill ${tierClass}" style="width: ${factorPct}%;"></div>
+            </div>
+            <div class="health-factor-desc">${escapeHtml(f.description || '')}</div>
+          </div>
+        `;
+      });
+
+      const topTip = (healthScore.tips && healthScore.tips.length > 0) ? healthScore.tips[0] : '';
+
+      html += `
+        <div class="health-score-card">
+          <div class="health-score-header">
+            <div class="health-score-left">
+              <div class="health-score-gauge-wrap">
+                <div class="health-score-number">${healthScore.score}</div>
+                <div class="health-score-max">/100</div>
+              </div>
+              <div class="health-score-meta">
+                <div class="health-tier-badge ${tierClass}">${escapeHtml(healthScore.tier)} ${partialBadge}</div>
+                <h3>Financial Health Score</h3>
+                <p>Deterministic composite based on your savings, budget adherence, and logging habits</p>
+              </div>
+            </div>
+          </div>
+          <div class="health-factors-grid">
+            ${factorsHtml}
+          </div>
+          ${topTip ? `
+            <div class="health-score-tip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              <span>${escapeHtml(topTip)}</span>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    // 4. AI Insight Callout Card
     html += `
       <div class="insight-callout-card">
         <div class="insight-callout-left">
@@ -747,7 +898,7 @@
       </div>
     `;
 
-    // 4. Charts Row: Spending Trend & Category Donut
+    // 5. Charts Row: Spending Trend & Category Donut
     html += '<div class="charts-row">';
 
     // Left Chart: Spending Trend
@@ -782,7 +933,107 @@
 
     html += '</div>'; // close charts-row
 
-    // 5. Recent Transactions Section
+    // 6. Budgets & Rollovers Section
+    if (categoryBreakdown.length > 0) {
+      html += `
+        <div class="budgets-rollover-card">
+          <div class="chart-header" style="margin-bottom: 12px;">
+            <div class="chart-title-wrap">
+              <h3>Category Budgets & Rollovers</h3>
+              <span>Toggle rollover to carry unspent amounts into next month</span>
+            </div>
+          </div>
+          <div class="budgets-rollover-list">
+      `;
+
+      categoryBreakdown.forEach((c) => {
+        const spent = c.total;
+        const effBudget = c.budget;
+        const carried = c.carried_amount || 0;
+        const isRollover = c.rollover_enabled;
+        const rem = effBudget > 0 ? effBudget - spent : 0;
+        const remText = effBudget > 0 ? (rem >= 0 ? `${formatCurrency(rem)} left` : `${formatCurrency(Math.abs(rem))} over`) : 'No limit';
+        const remColor = effBudget > 0 && rem < 0 ? '#F87171' : 'var(--text-secondary)';
+
+        html += `
+          <div class="category-budget-row">
+            <div class="cat-b-name-wrap">
+              <span class="cat-b-name">${escapeHtml(c.category)}</span>
+              ${carried > 0 ? `<span class="rollover-indicator-pill">+${formatCurrency(carried)} rolled over from last month</span>` : ''}
+            </div>
+            <div class="cat-b-amounts">
+              <div>
+                <span class="cat-b-spent">${formatCurrency(spent)}</span>
+                <span class="cat-b-limit"> / ${effBudget > 0 ? formatCurrency(effBudget) : 'No limit'}</span>
+                <div style="font-size:0.75rem; color:${remColor}; text-align:right;">${remText}</div>
+              </div>
+              <label class="rollover-switch-label" title="Roll over unspent budget to next month">
+                <input type="checkbox" class="rollover-toggle-cb" data-category="${escapeHtml(c.category)}" ${isRollover ? 'checked' : ''}>
+                <span class="rollover-slider"></span>
+                <span class="rollover-switch-text">${isRollover ? 'Rollover' : 'Off'}</span>
+              </label>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div></div>'; // close budgets-rollover-card
+    }
+
+    // 7. Recurring Bills & Subscriptions Section
+    const recurringList = (recurringData && recurringData.recurring) || [];
+    html += `
+      <div class="dashboard-recurring-card" id="recurring-bills-section">
+        <div class="chart-header">
+          <div class="chart-title-wrap">
+            <h3>Recurring Bills & Subscriptions</h3>
+            <span>Fixed payments with automatic due date tracking</span>
+          </div>
+          <button class="btn-secondary" id="btn-add-recurring-trigger" style="display:inline-flex;align-items:center;gap:6px;font-size:var(--font-size-xs);padding:6px 12px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Add Bill
+          </button>
+        </div>
+        <div class="recurring-list-wrap">
+    `;
+
+    if (recurringList.length > 0) {
+      html += '<div class="recurring-items-grid">';
+      recurringList.forEach((r) => {
+        const isInactive = !r.active;
+        html += `
+          <div class="recurring-item ${isInactive ? 'inactive' : ''}">
+            <div class="rec-info">
+              <div class="rec-name-row">
+                <strong class="rec-name">${escapeHtml(r.name)}</strong>
+                <span class="rec-freq-pill">${escapeHtml(r.frequency)}</span>
+              </div>
+              <div class="rec-due-row">
+                <span class="rec-due-date">Due: ${formatDate(r.next_due_date)}</span>
+                ${r.active ? '<span class="rec-active-pill">Active</span>' : '<span class="rec-inactive-pill">Paused</span>'}
+              </div>
+            </div>
+            <div class="rec-amount-action">
+              <div class="rec-amount">${formatCurrency(r.amount)}</div>
+              ${r.active ? `<button class="btn-deactivate-rec" data-rec-id="${r.id}">Deactivate</button>` : ''}
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+    } else {
+      html += `
+        <div class="empty-state" style="padding: 24px 0;">
+          <p>No recurring bills tracked. Add rent, electricity, or subscriptions to receive automated bill reminders.</p>
+        </div>
+      `;
+    }
+    html += '</div></div>'; // close recurring card
+
+    // 8. Recent Transactions Section
     html += `
       <div class="dashboard-txn-card">
         <div class="chart-header" style="margin-bottom: 0;">
@@ -842,6 +1093,83 @@
         }
       });
     }
+
+    // Wire up Export button
+    const exportBtn = $('#btn-open-export');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => {
+        const modal = $('#modal-export');
+        if (modal) {
+          const monthInput = $('#export-month');
+          if (monthInput && !monthInput.value) {
+            monthInput.value = new Date().toISOString().slice(0, 7);
+          }
+          modal.style.display = 'flex';
+        }
+      });
+    }
+
+    // Wire up View Bills button on banner
+    const viewBillsBtn = $('#banner-view-bills-btn');
+    if (viewBillsBtn) {
+      viewBillsBtn.addEventListener('click', () => {
+        const sec = document.getElementById('recurring-bills-section');
+        if (sec) sec.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+
+    // Wire up Add Recurring Bill button
+    const addRecBtn = $('#btn-add-recurring-trigger');
+    if (addRecBtn) {
+      addRecBtn.addEventListener('click', () => {
+        const modal = $('#modal-recurring');
+        if (modal) {
+          const dInput = $('#rec-date');
+          if (dInput && !dInput.value) {
+            dInput.value = new Date().toISOString().slice(0, 10);
+          }
+          modal.style.display = 'flex';
+        }
+      });
+    }
+
+    // Wire up Deactivate Recurring Bill buttons
+    $$('.btn-deactivate-rec').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.target.getAttribute('data-rec-id');
+        if (!id) return;
+        try {
+          await api(`/api/recurring/${id}/deactivate`, { method: 'POST' });
+          showToast('Recurring bill deactivated', 'success');
+          loadDashboard();
+        } catch (err) {
+          showToast(err.message || 'Failed to deactivate bill', 'error');
+        }
+      });
+    });
+
+    // Wire up Rollover toggles
+    $$('.rollover-toggle-cb').forEach((cb) => {
+      cb.addEventListener('change', async (e) => {
+        const cat = e.target.getAttribute('data-category');
+        const enabled = e.target.checked;
+        const textSpan = e.target.parentElement.querySelector('.rollover-switch-text');
+        if (textSpan) {
+          textSpan.textContent = enabled ? 'Rollover' : 'Off';
+        }
+        try {
+          await api('/api/budgets/rollover/toggle', {
+            method: 'POST',
+            body: JSON.stringify({ category: cat, enabled }),
+          });
+          showToast(`Budget rollover for ${cat} ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        } catch (err) {
+          e.target.checked = !enabled;
+          if (textSpan) textSpan.textContent = !enabled ? 'Rollover' : 'Off';
+          showToast(err.message || 'Failed to update rollover', 'error');
+        }
+      });
+    });
   }
 
   // SVG Donut Chart Renderer
@@ -930,14 +1258,20 @@
       `;
     }
 
-    let chartData = data;
-    if (data.length === 1) {
-      const d0 = data[0];
-      chartData = [
-        { date: '', total: 0 },
-        { date: d0.date || d0.day, total: d0.total || d0.amount || 0 }
-      ];
+    // Generate last 7 days series so the 7-day trend chart shows a complete, smooth curve
+    const last7Days = [];
+    const today = new Date();
+    for (let offset = 6; offset >= 0; offset--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - offset);
+      const iso = d.toISOString().split('T')[0];
+      const matched = data.find((item) => (item.date || item.day) === iso);
+      last7Days.push({
+        date: iso,
+        total: matched ? (matched.total || matched.amount || 0) : 0,
+      });
     }
+    const chartData = last7Days;
 
     const w = 480, h = 180, padL = 40, padR = 16, padT = 20, padB = 30;
     const chartW = w - padL - padR;
@@ -952,7 +1286,7 @@
 
     chartData.forEach((d, i) => {
       const val = d.total || d.amount || 0;
-      const x = padL + (data.length > 1 ? i * stepX : chartW / 2);
+      const x = padL + (chartData.length > 1 ? i * stepX : chartW / 2);
       const y = padT + chartH - (val / maxVal) * chartH;
 
       if (i === 0) {
@@ -968,11 +1302,11 @@
         <circle class="trend-point" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4">
           <title>${dateStr}: ${formatCurrency(val)}</title>
         </circle>
-        <text x="${x.toFixed(1)}" y="${h - 8}" fill="#64748B" font-size="10" text-anchor="middle" font-family="Inter,sans-serif">${dateStr}</text>
+        <text class="trend-axis-text" x="${x.toFixed(1)}" y="${h - 8}" font-size="10" text-anchor="middle" font-family="Inter,sans-serif">${dateStr}</text>
       `;
     });
 
-    const lastX = padL + (data.length > 1 ? (data.length - 1) * stepX : chartW / 2);
+    const lastX = padL + (chartData.length > 1 ? (chartData.length - 1) * stepX : chartW / 2);
     areaPoints += ` L${lastX.toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
 
     // Grid lines
@@ -981,8 +1315,8 @@
       const y = padT + (chartH * i) / 3;
       const gridVal = Math.round(maxVal - (maxVal * i) / 3);
       gridHtml += `
-        <line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="3 3"/>
-        <text x="${padL - 8}" y="${y + 3}" fill="#64748B" font-size="9" text-anchor="end" font-family="Inter,sans-serif">${Math.round(gridVal)}</text>
+        <line class="trend-grid-line" x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke-width="1" stroke-dasharray="3 3"/>
+        <text class="trend-axis-text" x="${padL - 8}" y="${y + 3}" font-size="9" text-anchor="end" font-family="Inter,sans-serif">${Math.round(gridVal)}</text>
       `;
     }
 
@@ -990,7 +1324,7 @@
       <svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
         <defs>
           <linearGradient id="trend-area-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#10B981" stop-opacity="0.16" />
+            <stop offset="0%" stop-color="#10B981" stop-opacity="0.18" />
             <stop offset="100%" stop-color="#10B981" stop-opacity="0.0" />
           </linearGradient>
         </defs>
@@ -1023,8 +1357,8 @@
   function renderUdhar(data) {
     const totalLent = data.total_lent || 0;
     const totalBorrowed = data.total_borrowed || 0;
-    const net = totalLent - totalBorrowed;
-    const people = data.people || [];
+    const net = typeof data.net === 'number' ? data.net : (totalLent - totalBorrowed);
+    const persons = data.persons || data.people || [];
 
     let html = '';
 
@@ -1033,35 +1367,65 @@
     html += `<div class="udhar-card">
       <div class="card-label">Total Lent</div>
       <div class="card-value lent-color">${formatCurrency(totalLent)}</div>
+      <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:2px;">Friends owe you</div>
     </div>`;
     html += `<div class="udhar-card">
       <div class="card-label">Total Borrowed</div>
       <div class="card-value borrowed-color">${formatCurrency(totalBorrowed)}</div>
+      <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:2px;">You owe friends</div>
     </div>`;
     html += `<div class="udhar-card">
-      <div class="card-label">Net Position</div>
-      <div class="card-value net-color">${formatCurrency(net)}</div>
+      <div class="card-label">Net Balance</div>
+      <div class="card-value ${net > 0 ? 'lent-color' : (net < 0 ? 'borrowed-color' : '')}">${formatCurrency(net)}</div>
+      <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:2px;">${net > 0 ? 'Net receivable' : (net < 0 ? 'Net payable' : 'All clear')}</div>
     </div>`;
     html += '</div>';
 
     // People list
-    if (people.length > 0) {
+    if (persons.length > 0) {
       html += '<div class="udhar-people-list">';
-      people.forEach((p) => {
-        const isLent = p.kind === 'lent';
-        const colorClass = isLent ? 'lent-color' : 'borrowed-color';
-        const label = isLent ? 'You lent' : 'You borrowed';
+      persons.forEach((p) => {
+        const name = p.name || p.person_name || 'Friend';
+        const pNet = typeof p.net === 'number' ? p.net : ((p.kind === 'lent' ? 1 : -1) * (p.amount || 0));
+        const hasSplit = p.is_split || (p.history && p.history.some((h) => h.is_split));
+
+        let statusText = 'Settled up';
+        let colorClass = '';
+        if (pNet > 0) {
+          statusText = `Owes you ${formatCurrency(pNet)}`;
+          colorClass = 'lent-color';
+        } else if (pNet < 0) {
+          statusText = `You owe ${formatCurrency(Math.abs(pNet))}`;
+          colorClass = 'borrowed-color';
+        }
+
+        let detailLine = '';
+        if (p.history && p.history.length > 0) {
+          const lastEntry = p.history[p.history.length - 1];
+          const dateStr = lastEntry.entry_date ? formatDate(lastEntry.entry_date) : '';
+          const noteStr = lastEntry.note ? escapeHtml(lastEntry.note) : (lastEntry.kind === 'lent' ? 'Lent' : 'Borrowed');
+          detailLine = dateStr ? `${noteStr} · ${dateStr}` : noteStr;
+        } else if (p.note) {
+          detailLine = escapeHtml(p.note);
+        }
+
         html += `<div class="udhar-person">
           <div class="udhar-person-info">
-            <span class="udhar-person-name">${escapeHtml(p.person_name)}</span>
-            <span class="udhar-person-detail">${label}${p.note ? ' - ' + escapeHtml(p.note) : ''}</span>
+            <div class="udhar-name-row">
+              <span class="udhar-person-name">${escapeHtml(name)}</span>
+              ${hasSplit ? '<span class="split-badge">Split</span>' : ''}
+            </div>
+            <span class="udhar-person-detail">${detailLine || statusText}</span>
           </div>
-          <span class="udhar-person-amount ${colorClass}">${formatCurrency(p.net_amount || p.amount)}</span>
+          <div style="text-align:right;">
+            <span class="udhar-person-amount ${colorClass}">${formatCurrency(Math.abs(pNet))}</span>
+            <div style="font-size:0.72rem;color:var(--text-tertiary);">${pNet > 0 ? 'Owes you' : (pNet < 0 ? 'You owe' : 'Settled')}</div>
+          </div>
         </div>`;
       });
       html += '</div>';
     } else {
-      html += '<div class="empty-state"><p>No udhar entries yet. Tell ABT about money you lent or borrowed.</p></div>';
+      html += '<div class="empty-state"><p>No shared balances or debts yet. Ask ABT in chat about money you lent or borrowed, or tap "Split Expense".</p></div>';
     }
 
     udharContent.innerHTML = html;
@@ -1516,6 +1880,256 @@
       obIncome = (!isNaN(val) && val > 0) ? val : null;
       if (obLastFetchedIncome !== obIncome) {
         obDefaultsFetched = false;
+      }
+    });
+  }
+
+  // ---------- Modals & Tier 1 Feature Handlers ----------
+
+  function openModal(id) {
+    const m = $(id);
+    if (m) m.style.display = 'flex';
+  }
+
+  function closeModal(id) {
+    const m = $(id);
+    if (m) m.style.display = 'none';
+  }
+
+  // Backdrop click & Escape key to close modals
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      $$('.modal-overlay').forEach((m) => {
+        m.style.display = 'none';
+      });
+    }
+  });
+
+  $$('.modal-overlay').forEach((modal) => {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.style.display = 'none';
+      }
+    });
+  });
+
+  // Export Modal Handlers
+  const exportCloseBtn = $('#export-modal-close');
+  const exportCancelBtn = $('#export-cancel-btn');
+  const exportDownloadBtn = $('#export-download-btn');
+  const optFmtPdf = $('#opt-fmt-pdf');
+  const optFmtXlsx = $('#opt-fmt-xlsx');
+
+  if (exportCloseBtn) exportCloseBtn.addEventListener('click', () => closeModal('#modal-export'));
+  if (exportCancelBtn) exportCancelBtn.addEventListener('click', () => closeModal('#modal-export'));
+
+  if (optFmtPdf) {
+    optFmtPdf.addEventListener('click', () => {
+      const radio = optFmtPdf.querySelector('input[type="radio"]');
+      if (radio) radio.checked = true;
+      optFmtPdf.classList.add('active');
+      if (optFmtXlsx) optFmtXlsx.classList.remove('active');
+    });
+  }
+
+  if (optFmtXlsx) {
+    optFmtXlsx.addEventListener('click', () => {
+      const radio = optFmtXlsx.querySelector('input[type="radio"]');
+      if (radio) radio.checked = true;
+      optFmtXlsx.classList.add('active');
+      if (optFmtPdf) optFmtPdf.classList.remove('active');
+    });
+  }
+
+  if (exportDownloadBtn) {
+    exportDownloadBtn.addEventListener('click', async () => {
+      const monthInput = $('#export-month');
+      const month = monthInput?.value || new Date().toISOString().slice(0, 7);
+      const fmtRadio = $('input[name="export_format"]:checked');
+      const format = fmtRadio ? fmtRadio.value : 'pdf';
+
+      exportDownloadBtn.disabled = true;
+      const originalHtml = exportDownloadBtn.innerHTML;
+      exportDownloadBtn.innerHTML = 'Generating...';
+
+      try {
+        const res = await fetch(`/api/export/monthly?month=${encodeURIComponent(month)}&format=${format}`, {
+          headers: {
+            'Authorization': 'Bearer ' + authToken,
+          },
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to generate statement export');
+        }
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        const filename = format === 'xlsx' ? `statement_${month}.xlsx` : `statement_${month}.pdf`;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+
+        showToast(`Downloaded ${format.toUpperCase()} statement for ${month}`, 'success');
+        closeModal('#modal-export');
+      } catch (err) {
+        showToast(err.message || 'Export download failed', 'error');
+      } finally {
+        exportDownloadBtn.disabled = false;
+        exportDownloadBtn.innerHTML = originalHtml;
+      }
+    });
+  }
+
+  // Recurring Bill Modal Handlers
+  const recCloseBtn = $('#recurring-modal-close');
+  const recCancelBtn = $('#recurring-cancel-btn');
+  const recSaveBtn = $('#recurring-save-btn');
+
+  if (recCloseBtn) recCloseBtn.addEventListener('click', () => closeModal('#modal-recurring'));
+  if (recCancelBtn) recCancelBtn.addEventListener('click', () => closeModal('#modal-recurring'));
+
+  if (recSaveBtn) {
+    recSaveBtn.addEventListener('click', async () => {
+      const name = $('#rec-name')?.value?.trim();
+      const amount = parseFloat($('#rec-amount')?.value);
+      const frequency = $('#rec-frequency')?.value || 'monthly';
+      const category = $('#rec-category')?.value || 'other';
+      const startDate = $('#rec-date')?.value || null;
+
+      if (!name) {
+        showToast('Please enter a bill or subscription name', 'error');
+        return;
+      }
+      if (isNaN(amount) || amount <= 0) {
+        showToast('Please enter a valid amount', 'error');
+        return;
+      }
+
+      recSaveBtn.disabled = true;
+      recSaveBtn.textContent = 'Saving...';
+
+      try {
+        await api('/api/recurring', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            amount,
+            category,
+            frequency,
+            start_date: startDate,
+          }),
+        });
+
+        showToast(`Added recurring bill "${name}"`, 'success');
+        closeModal('#modal-recurring');
+        $('#rec-name').value = '';
+        $('#rec-amount').value = '';
+        loadDashboard();
+      } catch (err) {
+        showToast(err.message || 'Failed to save recurring bill', 'error');
+      } finally {
+        recSaveBtn.disabled = false;
+        recSaveBtn.textContent = 'Save Recurring Bill';
+      }
+    });
+  }
+
+  // Split Expense Modal Handlers
+  const splitTriggerBtn = $('#btn-split-trigger');
+  const splitCloseBtn = $('#split-modal-close');
+  const splitCancelBtn = $('#split-cancel-btn');
+  const splitConfirmBtn = $('#split-confirm-btn');
+  const splitAmtInput = $('#split-amount');
+  const splitPartsInput = $('#split-participants');
+
+  if (splitTriggerBtn) {
+    splitTriggerBtn.addEventListener('click', () => {
+      openModal('#modal-split');
+      updateSplitPreview();
+    });
+  }
+
+  if (splitCloseBtn) splitCloseBtn.addEventListener('click', () => closeModal('#modal-split'));
+  if (splitCancelBtn) splitCancelBtn.addEventListener('click', () => closeModal('#modal-split'));
+
+  function updateSplitPreview() {
+    const amountVal = parseFloat($('#split-amount')?.value);
+    const participantsVal = $('#split-participants')?.value || '';
+    const names = participantsVal.split(',').map((s) => s.trim()).filter(Boolean);
+    const previewBox = $('#split-calc-preview');
+    const userShareEl = $('#preview-user-share');
+    const friendsShareEl = $('#preview-friends-share');
+
+    if (!isNaN(amountVal) && amountVal > 0 && names.length > 0) {
+      const totalPeople = names.length + 1;
+      const userShare = Math.round((amountVal / totalPeople) * 100) / 100;
+      const friendsShare = Math.round((amountVal - userShare) * 100) / 100;
+      const perFriend = Math.round((friendsShare / names.length) * 100) / 100;
+
+      if (userShareEl) userShareEl.textContent = formatCurrency(userShare);
+      if (friendsShareEl) friendsShareEl.textContent = `${formatCurrency(friendsShare)} (${names.length} friend${names.length > 1 ? 's' : ''} @ ${formatCurrency(perFriend)} each)`;
+      if (previewBox) previewBox.style.display = 'flex';
+    } else {
+      if (previewBox) previewBox.style.display = 'none';
+    }
+  }
+
+  if (splitAmtInput) splitAmtInput.addEventListener('input', updateSplitPreview);
+  if (splitPartsInput) splitPartsInput.addEventListener('input', updateSplitPreview);
+
+  if (splitConfirmBtn) {
+    splitConfirmBtn.addEventListener('click', async () => {
+      const amount = parseFloat($('#split-amount')?.value);
+      const category = $('#split-category')?.value || 'food';
+      const note = $('#split-note')?.value?.trim() || null;
+      const participantsRaw = $('#split-participants')?.value || '';
+      const participants = participantsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+
+      if (isNaN(amount) || amount <= 0) {
+        showToast('Please enter a valid total amount', 'error');
+        return;
+      }
+      if (participants.length === 0) {
+        showToast('Please enter at least one friend to split with', 'error');
+        return;
+      }
+
+      splitConfirmBtn.disabled = true;
+      splitConfirmBtn.textContent = 'Recording...';
+
+      try {
+        const res = await api('/api/udhar/split', {
+          method: 'POST',
+          body: JSON.stringify({
+            total_amount: amount,
+            amount: amount,
+            category,
+            note,
+            participants,
+          }),
+        });
+
+        showToast(res.message || `Split expense of ${formatCurrency(amount)} recorded!`, 'success');
+        closeModal('#modal-split');
+
+        $('#split-amount').value = '';
+        $('#split-note').value = '';
+        $('#split-participants').value = '';
+        if ($('#split-calc-preview')) $('#split-calc-preview').style.display = 'none';
+
+        loadUdhar();
+      } catch (err) {
+        showToast(err.message || 'Failed to record split', 'error');
+      } finally {
+        splitConfirmBtn.disabled = false;
+        splitConfirmBtn.textContent = 'Record & Split';
       }
     });
   }

@@ -40,12 +40,16 @@ own data from tools — you never invent numbers.
 
 == CORE BEHAVIOUR ==
 - When the user mentions spending money, call log_expense.
+- When they mention splitting or sharing a group expense (e.g. "I paid 1500 for dinner with Rahul and Priya"), call split_expense.
+- When they mention regular or recurring bills (e.g. "I pay 12000 rent every month", "Netflix is 649 monthly"), call add_recurring_expense. Confirm using actual stored values returned from the tool, never invent.
+- When they ask about upcoming bills or subscriptions, call get_recurring_expenses.
+- When they ask to cancel or stop a recurring bill, call deactivate_recurring_expense.
 - When they mention receiving money (salary, freelance, etc.), call add_income.
 - When they ask to set a budget, call set_budget.
-- When they ask about budget/spend status, call check_budget_status or \
-get_monthly_summary.
+- When they ask about budget/spend status, call check_budget_status or get_monthly_summary.
 - When they ask for a weekly recap or how their week went, call get_weekly_recap.
-- When they ask about their financial health, savings rate, or how much they \
+- When they ask about their financial health score or rating, call get_health_score.
+- When they ask about their general financial snapshot, savings rate, or how much they \
 can spend, call get_financial_snapshot. Use the numbers it returns exactly.
 - When they set a savings goal (e.g. "I want to save for a phone"), call \
 set_savings_goal. Always confirm the target, saved-so-far, and deadline before saving.
@@ -76,8 +80,10 @@ horizon advice) AND only if you have not already recorded it via update_profile.
 Never ask repeatedly.
 - When editing or deleting a past expense: call get_recent_expenses first, \
 confirm the right transaction, then call update_expense or delete_expense.
-- Keep replies SHORT — 2-4 lines plus numbers. Use the Rs symbol (Rs) for \
-amounts in INR.
+- Tone and style: Sound natural, warm, and professional, not robotic, stiff, or clipped.
+- Routine confirmations: Keep confirmations natural and concise (e.g. "Logged Rs 120 for snacks under Food."). Never append canned robotic questions like "Anything else you'd like to log or review?".
+- Internal IDs: Never expose internal database IDs (like transaction #37 or user #) in routine confirmations or summaries. Only mention IDs when specifically disambiguating between multiple similar entries or confirming an explicit edit/delete.
+- Keep replies SHORT — 2-4 lines plus numbers. Use the Rs symbol (Rs) for amounts in INR.
 - Do NOT use any emojis or emoji characters anywhere in your responses.
 - Never repeat raw tool output verbatim — summarise it conversationally.
 - Never invent numbers — every figure must come from a tool result.
@@ -95,7 +101,8 @@ def log_expense(amount: float, category: str, note: str = "", config: RunnableCo
     note is an optional short description."""
     user_id = _get_user_id(config)
     record = db.log_transaction(user_id=user_id, amount=amount, category=category.lower().strip(), note=note)
-    return f"Logged Rs {amount:.0f} under '{category.lower().strip()}' (ID: {record['id']})."
+    note_str = f" for {note.strip()}" if note and note.strip() else ""
+    return f"Logged Rs {amount:.0f}{note_str} under {category.lower().strip().capitalize()}."
 
 
 @tool
@@ -103,36 +110,42 @@ def set_budget(category: str, monthly_limit: float, config: RunnableConfig = Non
     """Set or update the monthly budget limit for a spending category."""
     user_id = _get_user_id(config)
     db.set_budget(user_id=user_id, category=category, monthly_limit=monthly_limit)
-    return f"Budget for '{category.lower().strip()}' set to Rs {monthly_limit:.0f}/month."
+    return f"Monthly budget for {category.lower().strip().capitalize()} set to Rs {monthly_limit:.0f}."
 
 
 @tool
 def check_budget_status(category: str = "", config: RunnableConfig = None) -> str:
     """Check spend vs budget for the current month. If category is empty, returns
-    status for ALL categories that have a budget set."""
+    status for ALL categories that have a budget set, including any rollover amounts."""
     user_id = _get_user_id(config)
     month = db.current_month()
     spend = db.spend_by_category(user_id, month)
-    budgets = db.get_budgets(user_id)
+    eff_budgets = db.get_effective_budgets(user_id, month)
 
     if category:
         category = category.lower().strip()
-        limit = budgets.get(category)
+        b_info = eff_budgets.get(category)
         spent = spend.get(category, 0)
-        if limit is None:
+        if not b_info:
             return f"No budget set for '{category}'. You've spent Rs {spent:.0f} on it this month."
+        limit = b_info["effective_budget"]
+        carried = b_info.get("carried_amount", 0.0)
         pct = (spent / limit * 100) if limit else 0
-        return f"{category}: Rs {spent:.0f} / Rs {limit:.0f} ({pct:.0f}%) this month."
+        rollover_note = f" (includes Rs {carried:.0f} rolled over from last month)" if carried > 0 else ""
+        return f"{category}: Rs {spent:.0f} / Rs {limit:.0f} ({pct:.0f}%) this month{rollover_note}."
 
-    if not budgets:
+    if not eff_budgets:
         return "No budgets set yet. Total spend this month: Rs %.0f" % sum(spend.values())
 
     lines = []
-    for cat, limit in budgets.items():
+    for cat, b_info in eff_budgets.items():
         spent = spend.get(cat, 0)
+        limit = b_info["effective_budget"]
+        carried = b_info.get("carried_amount", 0.0)
         pct = (spent / limit * 100) if limit else 0
         flag = " [OVER BUDGET]" if spent > limit else ""
-        lines.append(f"{cat}: Rs {spent:.0f}/Rs {limit:.0f} ({pct:.0f}%){flag}")
+        rollover_note = f" (includes Rs {carried:.0f} rolled over)" if carried > 0 else ""
+        lines.append(f"{cat}: Rs {spent:.0f}/Rs {limit:.0f} ({pct:.0f}%){flag}{rollover_note}")
     return "\n".join(lines)
 
 
@@ -222,7 +235,7 @@ def add_income(
         source=source.strip() or "salary",
         entry_date=entry_date or None,
     )
-    return f"Logged income of Rs {amount:.0f} from '{entry['source']}'."
+    return f"Logged income of Rs {amount:.0f} from {entry['source'].capitalize()}."
 
 
 @tool
@@ -366,12 +379,136 @@ def get_financial_snapshot(config: RunnableConfig = None) -> str:
 
 
 # ======================================================================
+# TOOLS — Recurring Expenses & Bill Reminders
+# ======================================================================
+
+@tool
+def add_recurring_expense(
+    name: str,
+    amount: float,
+    category: str,
+    frequency: str = "monthly",
+    start_date: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """Register a recurring expense or bill reminder. name is the bill name (e.g. 'Rent', 'Netflix', 'Electricity').
+    amount is the payment amount. category is a standard category (bills, rent, entertainment, etc.).
+    frequency is 'monthly', 'weekly', or 'yearly' (defaults to 'monthly').
+    start_date is optional YYYY-MM-DD next due date."""
+    user_id = _get_user_id(config)
+    exp = db.add_recurring_expense(
+        user_id=user_id,
+        name=name.strip(),
+        amount=amount,
+        category=category.lower().strip(),
+        frequency=frequency.lower().strip() or "monthly",
+        start_date=start_date or None,
+    )
+    return (
+        f"Added recurring {exp['frequency']} bill for '{exp['name']}' of Rs {exp['amount']:.0f}. "
+        f"Next due date is {exp['next_due_date']}."
+    )
+
+
+@tool
+def get_recurring_expenses(config: RunnableConfig = None) -> str:
+    """List all recurring expenses and upcoming bill reminders for the user."""
+    user_id = _get_user_id(config)
+    expenses = db.get_recurring_expenses(user_id=user_id, active_only=True)
+    if not expenses:
+        return "No recurring expenses or bills configured."
+    lines = ["Recurring bills & expenses:"]
+    for e in expenses:
+        lines.append(f"#{e['id']} '{e['name']}': Rs {e['amount']:.0f} ({e['frequency']}) — Next due: {e['next_due_date']}")
+    return "\n".join(lines)
+
+
+@tool
+def deactivate_recurring_expense(expense_id: int, config: RunnableConfig = None) -> str:
+    """Deactivate or cancel an existing recurring bill reminder by its ID."""
+    user_id = _get_user_id(config)
+    ok = db.deactivate_recurring_expense(user_id=user_id, expense_id=expense_id)
+    if ok:
+        return f"Recurring expense #{expense_id} has been deactivated."
+    return f"Recurring expense #{expense_id} not found."
+
+
+# ======================================================================
+# TOOLS — Health Score & Group Split
+# ======================================================================
+
+@tool
+def get_health_score(month: str = "", config: RunnableConfig = None) -> str:
+    """Get the user's deterministic Financial Health Score (0-100) and factor breakdown.
+    month is optional YYYY-MM; defaults to current month."""
+    user_id = _get_user_id(config)
+    res = db.compute_health_score(user_id=user_id, month=month.strip() or None)
+    lines = [f"Financial Health Score: {res['score']}/100 ({res['tier']})"]
+    for f in res["factors"]:
+        lines.append(f"- {f['name']}: {f['score']}/100 ({f['status']}) — {f['description']}")
+    if res["tips"]:
+        lines.append(f"Recommendation: {res['tips'][0]}")
+    return "\n".join(lines)
+
+
+@tool
+def split_expense(
+    total_amount: float,
+    category: str,
+    participants: str,
+    note: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """Split a shared expense among yourself and friends.
+    total_amount is the full amount you paid.
+    category is the spending category (food, travel, entertainment, etc.).
+    participants can be comma-separated names (e.g. 'Rahul, Priya') for an equal split,
+    or a JSON string list of objects with names and shares (e.g. '[{"name": "Rahul", "share": 500}]').
+    note is a short description of the expense."""
+    user_id = _get_user_id(config)
+    import json
+    parts = []
+    cleaned = participants.strip()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        try:
+            parsed = json.loads(cleaned)
+            for item in parsed:
+                if isinstance(item, str):
+                    parts.append({"name": item.strip()})
+                elif isinstance(item, dict) and "name" in item:
+                    parts.append({"name": str(item["name"]).strip(), "share": item.get("share")})
+        except Exception:
+            pass
+
+    if not parts:
+        names = [n.strip() for n in cleaned.split(",") if n.strip()]
+        for n in names:
+            parts.append({"name": n})
+
+    if not parts:
+        return "Please specify at least one person to split the expense with."
+
+    try:
+        res = db.split_expense(
+            user_id=user_id,
+            total_amount=total_amount,
+            category=category,
+            note=note,
+            participants=parts,
+        )
+        return res["summary"]
+    except Exception as e:
+        return f"Could not split expense: {str(e)}"
+
+
+# ======================================================================
 # TOOL REGISTRY & AGENT
 # ======================================================================
 
 TOOLS = [
     # Expenses
     log_expense,
+    split_expense,
     set_budget,
     check_budget_status,
     get_monthly_summary,
@@ -379,6 +516,10 @@ TOOLS = [
     get_recent_expenses,
     update_expense,
     delete_expense,
+    # Recurring
+    add_recurring_expense,
+    get_recurring_expenses,
+    deactivate_recurring_expense,
     # Income
     add_income,
     get_income_summary,
@@ -386,9 +527,10 @@ TOOLS = [
     set_savings_goal,
     contribute_to_goal,
     get_goals,
-    # Profile & Snapshot
+    # Profile & Health
     update_profile,
     get_financial_snapshot,
+    get_health_score,
 ]
 
 _llm = ChatGroq(

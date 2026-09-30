@@ -9,4 +9,5 @@ psycopg2-binary
 langchain
 langgraph == 0.2.20
 langchain-groq
-
+openpyxl
+reportlab

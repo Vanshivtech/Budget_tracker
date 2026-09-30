@@ -5,12 +5,13 @@ udhar, and health APIs.
 Run from the project root:
     uvicorn app.main:app --reload
 """
+import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -26,6 +27,10 @@ from app.db import (
     get_logging_streak, add_income_entry, get_income_summary,
     get_user_profile, update_user_profile,
     suggest_budget_defaults, has_completed_onboarding, complete_onboarding,
+    add_recurring_expense, get_recurring_expenses, deactivate_recurring_expense,
+    check_and_process_recurring_reminders, get_effective_budgets, set_category_rollover,
+    compute_health_score, split_expense, generate_monthly_excel, generate_monthly_pdf,
+    current_month,
 )
 from app.auth import hash_password, verify_password, create_access_token, get_current_user
 from app.agent import handle_user_message
@@ -38,12 +43,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 
+async def _daily_recurring_scheduler():
+    while True:
+        try:
+            check_and_process_recurring_reminders()
+        except Exception:
+            logger.exception("Error in recurring bills background check")
+        await asyncio.sleep(12 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.validate()
     init_db()
     logger.info("Database initialized with Supabase Postgres.")
+    try:
+        check_and_process_recurring_reminders()
+    except Exception:
+        logger.exception("Initial recurring bills check failed")
+    task = asyncio.create_task(_daily_recurring_scheduler())
     yield
+    task.cancel()
 
 
 app = FastAPI(title="ABT — AI Budget Tracker", lifespan=lifespan)
@@ -125,6 +145,32 @@ class OnboardingCompleteRequest(BaseModel):
     living_situation: str
     monthly_income: float | None = None
     categories: list[OnboardingCategoryItem]
+
+
+class RecurringAddRequest(BaseModel):
+    name: str
+    amount: float
+    category: str
+    frequency: str = "monthly"
+    start_date: str | None = None
+
+
+class RolloverToggleRequest(BaseModel):
+    category: str
+    enabled: bool
+
+
+class SplitParticipant(BaseModel):
+    name: str
+    share: float | None = None
+
+
+class SplitExpenseRequest(BaseModel):
+    total_amount: float | None = None
+    amount: float | None = None
+    category: str
+    note: str = ""
+    participants: list[SplitParticipant | str | dict]
 
 
 # ---------- Auth Routes ----------
@@ -396,6 +442,141 @@ def onboarding_complete(
 def health():
     """Health check endpoint (public)."""
     return {"status": "ok"}
+
+
+# ---------- Tier 1: Recurring Expenses & Bill Reminders ----------
+
+@app.get("/api/recurring")
+def recurring_list(user: dict = Depends(get_current_user)):
+    """Fetch all active and past recurring bills for the authenticated user."""
+    return {"recurring": get_recurring_expenses(user_id=user["id"])}
+
+
+@app.post("/api/recurring")
+def recurring_add(req: RecurringAddRequest, user: dict = Depends(get_current_user)):
+    """Add a new recurring expense/bill reminder."""
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    return add_recurring_expense(
+        user_id=user["id"],
+        name=req.name.strip(),
+        amount=req.amount,
+        category=req.category.strip(),
+        frequency=req.frequency,
+        start_date=req.start_date,
+    )
+
+
+@app.post("/api/recurring/{expense_id}/deactivate")
+def recurring_deactivate(expense_id: int, user: dict = Depends(get_current_user)):
+    """Deactivate a recurring expense."""
+    ok = deactivate_recurring_expense(user_id=user["id"], expense_id=expense_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Recurring expense not found")
+    return {"status": "ok", "deactivated_id": expense_id}
+
+
+@app.get("/api/recurring/reminders")
+def recurring_reminders(user: dict = Depends(get_current_user)):
+    """Get bills due within 2 days for the authenticated user."""
+    reminders = check_and_process_recurring_reminders(user_id=user["id"])
+    return {"reminders": reminders}
+
+
+@app.post("/api/recurring/trigger-reminders")
+def recurring_trigger_check(user: dict = Depends(get_current_user)):
+    """Manually trigger check and due-date advancement."""
+    reminders = check_and_process_recurring_reminders(user_id=user["id"])
+    return {"status": "ok", "reminders": reminders}
+
+
+# ---------- Tier 1: Monthly Export (PDF / Excel) ----------
+
+@app.get("/api/export/monthly")
+def export_monthly(
+    month: str | None = None,
+    format: str = "pdf",
+    user: dict = Depends(get_current_user),
+):
+    """Download clean, professional PDF or Excel monthly financial statement."""
+    target_month = month.strip() if month else current_month()
+    export_fmt = format.lower().strip()
+    if export_fmt not in ("pdf", "xlsx", "excel"):
+        raise HTTPException(status_code=400, detail="format must be 'pdf' or 'xlsx'")
+
+    if export_fmt in ("xlsx", "excel"):
+        content = generate_monthly_excel(user_id=user["id"], user_email=user["email"], month=target_month)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"statement_{target_month}.xlsx"
+    else:
+        content = generate_monthly_pdf(user_id=user["id"], user_email=user["email"], month=target_month)
+        media_type = "application/pdf"
+        filename = f"statement_{target_month}.pdf"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+# ---------- Tier 1: Budget Rollover ----------
+
+@app.get("/api/budgets/rollover")
+def budgets_rollover(user: dict = Depends(get_current_user)):
+    """Get all categories with their effective budget, base budget, carried amount, and rollover flag."""
+    return {"budgets": get_effective_budgets(user_id=user["id"])}
+
+
+@app.post("/api/budgets/rollover/toggle")
+def budget_rollover_toggle(req: RolloverToggleRequest, user: dict = Depends(get_current_user)):
+    """Enable or disable budget rollover for a specific category."""
+    res = set_category_rollover(user_id=user["id"], category=req.category, enabled=req.enabled)
+    if not res:
+        raise HTTPException(status_code=404, detail="Category not found in budgets")
+    return res
+
+
+# ---------- Tier 1: Financial Health Score ----------
+
+@app.get("/api/health-score")
+def health_score_get(month: str | None = None, user: dict = Depends(get_current_user)):
+    """Get deterministic 0-100 Financial Health Score with factor breakdown and tips."""
+    target_month = month.strip() if month else None
+    return compute_health_score(user_id=user["id"], month=target_month)
+
+
+# ---------- Tier 1: Group / Split Expenses ----------
+
+@app.post("/api/udhar/split")
+def udhar_split(req: SplitExpenseRequest, user: dict = Depends(get_current_user)):
+    """Split a group expense among user and participants."""
+    tot = req.total_amount if req.total_amount is not None else (req.amount or 0.0)
+    if tot <= 0:
+        raise HTTPException(status_code=400, detail="total_amount must be positive")
+    if not req.participants:
+        raise HTTPException(status_code=400, detail="participants list cannot be empty")
+    normalized_participants = []
+    for p in req.participants:
+        if isinstance(p, str):
+            normalized_participants.append({"name": p.strip()})
+        elif isinstance(p, SplitParticipant):
+            normalized_participants.append(p.model_dump())
+        elif isinstance(p, dict):
+            normalized_participants.append(p)
+    try:
+        return split_expense(
+            user_id=user["id"],
+            total_amount=tot,
+            category=req.category,
+            note=req.note,
+            participants=normalized_participants,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------- Frontend ----------
