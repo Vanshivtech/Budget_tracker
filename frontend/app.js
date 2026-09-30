@@ -1,1262 +1,1532 @@
 /* ================================================================
-   ABT — AI Budget Tracker Application Logic
-   Auth · Chat · Dashboard · Udhar · Insights · Goals
+   ABT — AI Budget Tracker  |  App Logic
+   Pure vanilla JS. No build step. No dependencies.
    ================================================================ */
 
-(() => {
-    "use strict";
+(function () {
+  'use strict';
 
-    // ---------- Storage Keys ----------
-    const TOKEN_KEY   = "abt_token";
-    const USER_KEY    = "abt_user";
-    const SESSION_KEY = "abt_session_id";
+  // ---------- State ----------
+  let authToken = null;
+  let currentUser = null;
+  let currentView = 'chat';
+  let isSending = false;
+  let userNearBottom = true;
 
-    // ---------- In-Memory State ----------
-    let activeToken     = null;
-    let activeUser      = null;
-    let activeSessionId = null;
-    let isWaiting       = false;
-    let authMode        = "login";
-    let currentTab      = "chat";
+  // ---------- DOM refs ----------
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
 
-    // ---------- Helpers ----------
-    function uid() { return crypto.randomUUID(); }
+  const authScreen = $('#auth-screen');
+  const appScreen = $('#app-screen');
+  const authForm = $('#auth-form');
+  const authTitle = $('#auth-title');
+  const authSubtitle = $('#auth-subtitle');
+  const authError = $('#auth-error');
+  const authEmail = $('#auth-email');
+  const authPassword = $('#auth-password');
+  const authSubmitBtn = $('#auth-submit-btn');
+  const authSwitchText = $('#auth-switch-text');
+  const authSwitchBtn = $('#auth-switch-btn');
 
-    function formatCurrency(amount) {
-        return "\u20B9" + Number(amount).toLocaleString("en-IN", {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0,
-        });
+  const sidebar = $('#sidebar');
+  const sidebarOverlay = $('#sidebar-overlay');
+  const mobileMenuBtn = $('#mobile-menu-btn');
+  const logoutBtn = $('#logout-btn');
+  const userAvatarEl = $('#user-avatar');
+  const userEmailEl = $('#user-email');
+
+  const messageList = $('#message-list');
+  const messageListInner = $('#message-list-inner');
+  const chatWelcome = $('#chat-welcome');
+  const typingIndicator = $('#typing-indicator');
+  const composerInput = $('#composer-input');
+  const composerSend = $('#composer-send');
+  const jumpLatest = $('#jump-latest');
+
+  const dashboardContent = $('#dashboard-content');
+  const dashboardLoader = $('#dashboard-loader');
+  const udharContent = $('#udhar-content');
+  const udharLoader = $('#udhar-loader');
+  const insightsContent = $('#insights-content');
+  const insightsLoader = $('#insights-loader');
+
+  // Onboarding DOM refs
+  const onboardingScreen = $('#onboarding-screen');
+  const obStepLabel = $('#onboarding-step-label');
+  const obIncomeInput = $('#ob-income-input');
+  const obCategoriesContainer = $('#ob-categories');
+  const obTotalAmount = $('#ob-total-amount');
+  const obRemaining = $('#ob-remaining');
+  const obReviewList = $('#ob-review-list');
+  const obReviewSummary = $('#ob-review-summary');
+  const obBackBtn = $('#ob-back');
+  const obSkipBtn = $('#ob-skip');
+  const obNextBtn = $('#ob-next');
+  const redoOnboardingBtn = $('#redo-onboarding-btn');
+
+  // Onboarding state
+  let currentObStep = 1;
+  let obLiving = 'alone';
+  let obIncome = null;
+  let obCategoryState = {};
+  let obDefaultsFetched = false;
+  let obLastFetchedSituation = null;
+  let obLastFetchedIncome = null;
+
+  let isLoginMode = true;
+
+  // ---------- Helpers ----------
+
+  function api(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+    return fetch(path, { ...options, headers }).then(async (res) => {
+      if (res.status === 401) {
+        doLogout();
+        throw new Error('Session expired');
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Request failed');
+      return data;
+    });
+  }
+
+  function showToast(msg, type = 'info') {
+    const container = $('#toast-container');
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => {
+      el.style.animation = 'toastOut 300ms ease forwards';
+      setTimeout(() => el.remove(), 300);
+    }, 3500);
+  }
+
+  function formatCurrency(n) {
+    if (n == null || isNaN(n)) return '--';
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(n);
+  }
+
+  function formatDate(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  }
+
+  function formatTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ---------- Auth ----------
+
+  function toggleAuthMode() {
+    isLoginMode = !isLoginMode;
+    authTitle.textContent = isLoginMode ? 'Welcome back' : 'Create account';
+    authSubtitle.textContent = isLoginMode ? 'Sign in to your account' : 'Get started with ABT';
+    authSubmitBtn.textContent = isLoginMode ? 'Sign in' : 'Create account';
+    authSwitchText.textContent = isLoginMode ? "Don't have an account?" : 'Already have an account?';
+    authSwitchBtn.textContent = isLoginMode ? 'Create account' : 'Sign in';
+    authError.classList.remove('visible');
+    authError.textContent = '';
+    authPassword.autocomplete = isLoginMode ? 'current-password' : 'new-password';
+  }
+
+  authSwitchBtn.addEventListener('click', toggleAuthMode);
+
+  authForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+
+    if (!email || !password) return;
+
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = isLoginMode ? 'Signing in...' : 'Creating account...';
+    authError.classList.remove('visible');
+
+    try {
+      const endpoint = isLoginMode ? '/api/login' : '/api/signup';
+      const data = await api(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+
+      authToken = data.token;
+      currentUser = data.user;
+      sessionStorage.setItem('abt_token', authToken);
+      sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+
+      await checkOnboardingAndProceed();
+    } catch (err) {
+      authError.textContent = err.message;
+      authError.classList.add('visible');
+    } finally {
+      authSubmitBtn.disabled = false;
+      authSubmitBtn.textContent = isLoginMode ? 'Sign in' : 'Create account';
     }
+  });
 
-    function monthLabel(monthStr) {
-        if (!monthStr) return "";
-        const [y, m] = monthStr.split("-");
-        const d = new Date(parseInt(y), parseInt(m) - 1);
-        return d.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  function doLogout() {
+    authToken = null;
+    currentUser = null;
+    sessionStorage.removeItem('abt_token');
+    sessionStorage.removeItem('abt_user');
+    sessionStorage.removeItem('abt_onboarding_skipped');
+    hideOnboarding();
+    authScreen.style.display = '';
+    appScreen.classList.remove('active');
+    // Reset state
+    messageListInner.querySelectorAll('.msg').forEach((m) => m.remove());
+    chatWelcome.style.display = '';
+    authEmail.value = '';
+    authPassword.value = '';
+  }
+
+  logoutBtn.addEventListener('click', doLogout);
+
+  // ---------- Session restore & Onboarding check ----------
+
+  async function tryRestore() {
+    const token = sessionStorage.getItem('abt_token');
+    const user = sessionStorage.getItem('abt_user');
+    if (token && user) {
+      authToken = token;
+      currentUser = JSON.parse(user);
+      await checkOnboardingAndProceed();
     }
+  }
 
-    function formatDate(dateStr) {
-        if (!dateStr) return "";
-        const d = new Date(dateStr);
-        return d.toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" });
+  async function checkOnboardingAndProceed() {
+    try {
+      const skipped = sessionStorage.getItem('abt_onboarding_skipped');
+      if (skipped) {
+        showApp();
+        return;
+      }
+      const st = await api('/api/onboarding/status');
+      if (st && !st.completed) {
+        showOnboarding(1);
+      } else {
+        showApp();
+      }
+    } catch (err) {
+      console.warn('Could not check onboarding status:', err);
+      showApp();
     }
-
-    function statusTier(pct) {
-        if (pct === null || pct === undefined) return "safe";
-        if (pct >= 100) return "danger";
-        if (pct >= 70)  return "warning";
-        return "safe";
-    }
-
-    // ---------- Auth Storage ----------
-    function getToken() {
-        return activeToken || sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem("art_token") || localStorage.getItem("art_token");
-    }
-
-    function getUser() {
-        if (activeUser) return activeUser;
-        const raw = sessionStorage.getItem(USER_KEY) || localStorage.getItem(USER_KEY) || sessionStorage.getItem("art_user") || localStorage.getItem("art_user");
-        try { return raw ? JSON.parse(raw) : null; } catch { return null; }
-    }
-
-    function setAuth(token, user) {
-        activeToken     = token;
-        activeUser      = user;
-        activeSessionId = uid();
-
-        sessionStorage.setItem(TOKEN_KEY, token);
-        sessionStorage.setItem(USER_KEY, JSON.stringify(user));
-        sessionStorage.setItem(SESSION_KEY, activeSessionId);
-
-        localStorage.setItem(TOKEN_KEY, token);
-        localStorage.setItem(USER_KEY, JSON.stringify(user));
-    }
-
-    function clearAuth() {
-        activeToken     = null;
-        activeUser      = null;
-        activeSessionId = uid();
-
-        [TOKEN_KEY, USER_KEY, SESSION_KEY, "art_token", "art_user", "art_session_id"].forEach(k => {
-            sessionStorage.removeItem(k);
-            localStorage.removeItem(k);
-        });
-    }
-
-    // ---------- Authenticated Fetch ----------
-    async function authFetch(url, options = {}) {
-        const token = getToken();
-        if (!token) { handleLogout(); throw new Error("Not authenticated"); }
-        const res = await fetch(url, {
-            ...options,
-            headers: {
-                ...(options.headers || {}),
-                "Authorization": `Bearer ${token}`,
-            }
-        });
-        if (res.status === 401) { handleLogout(); throw new Error("Session expired"); }
-        return res;
-    }
-
-    // ---------- DOM Refs ----------
-    // Auth
-    const authScreen    = document.getElementById("authScreen");
-    const authCard      = document.getElementById("authCard");
-    const tabLogin      = document.getElementById("tabLogin");
-    const tabSignup     = document.getElementById("tabSignup");
-    const authError     = document.getElementById("authError");
-    const authForm      = document.getElementById("authForm");
-    const authEmail     = document.getElementById("authEmail");
-    const authPassword  = document.getElementById("authPassword");
-    const authSubmitBtn = document.getElementById("authSubmitBtn");
-    const authToggleBtn = document.getElementById("authToggleBtn");
-    const authSwitchHint= document.getElementById("authSwitchHint");
-
-    // App shell
-    const mainApp       = document.getElementById("mainApp");
-    const logoutBtn     = document.getElementById("logoutBtn");
-    const sidebarEmail  = document.getElementById("sidebarEmail");
-    const sidebarAvatar = document.getElementById("sidebarAvatar");
-    const drawerEmail   = document.getElementById("drawerEmail");
-    const drawerAvatar  = document.getElementById("drawerAvatar");
-
-    // Mobile nav
-    const mobileMenuBtn = document.getElementById("mobileMenuBtn");
-    const mobileOverlay = document.getElementById("mobileOverlay");
-    const mobileDrawer  = document.getElementById("mobileDrawer");
-    const drawerClose   = document.getElementById("drawerClose");
-    const drawerLogout  = document.getElementById("drawerLogout");
-
-    // Tab panes
-    const tabPaneChat      = document.getElementById("tabChat");
-    const tabPaneDashboard = document.getElementById("tabDashboard");
-    const tabPaneUdhar     = document.getElementById("tabUdhar");
-
-    // Sidebar nav buttons
-    const navChat      = document.getElementById("navChat");
-    const navDashboard = document.getElementById("navDashboard");
-    const navUdhar     = document.getElementById("navUdhar");
-
-    // Mobile tabbar
-    const tabbarChat      = document.getElementById("tabbarChat");
-    const tabbarDashboard = document.getElementById("tabbarDashboard");
-    const tabbarUdhar     = document.getElementById("tabbarUdhar");
-    const tabbarInsights  = document.getElementById("tabbarInsights");
-
-    // Insights
-    const tabPaneInsights = document.getElementById("tabInsights");
-    const recapSpent      = document.getElementById("recapSpent");
-    const recapChange     = document.getElementById("recapChange");
-    const recapTopCat     = document.getElementById("recapTopCat");
-    const recapStreak     = document.getElementById("recapStreak");
-    const insightCards    = document.getElementById("insightCards");
-    const goalsListInsights = document.getElementById("goalsListInsights");
-    const safeSpendCard   = document.getElementById("safeSpendCard");
-    const safeAmount      = document.getElementById("safeAmount");
-    const addGoalBtn      = document.getElementById("addGoalBtn");
-    const recapNarration  = document.getElementById("recapNarration");
-
-    // Home Card
-    const homeCard        = document.getElementById("homeCard");
-    const homeSafeSpend   = document.getElementById("homeSafeSpend");
-    const homeSavingsRate = document.getElementById("homeSavingsRate");
-    const homeGoalProgress= document.getElementById("homeGoalProgress");
-    const homeStreakBadge = document.getElementById("homeStreakBadge");
-
-    // Chat
-    const chatMessages  = document.getElementById("chatMessages");
-    const chatEmpty     = document.getElementById("chatEmpty");
-    const suggestionChips = document.getElementById("suggestionChips");
-    const chatForm      = document.getElementById("chatForm");
-    const chatInput     = document.getElementById("chatInput");
-    const sendBtn       = document.getElementById("sendBtn");
-
-    // Dashboard
-    const dashMonth        = document.getElementById("dashMonth");
-    const dashTotalSpent   = document.getElementById("dashTotalSpent");
-    const dashTotalBudget  = document.getElementById("dashTotalBudget");
-    const dashUdharNet     = document.getElementById("dashUdharNet");
-    const dashCategoryBars = document.getElementById("dashCategoryBars");
-    const budgetVsActual   = document.getElementById("budgetVsActual");
-    const trendCanvas      = document.getElementById("trendCanvas");
-    const dailyCanvas      = document.getElementById("dailyCanvas");
-    const dashDailyMonth   = document.getElementById("dashDailyMonth");
-
-    // Udhar
-    const addUdharBtn        = document.getElementById("addUdharBtn");
-    const udharTotalLent     = document.getElementById("udharTotalLent");
-    const udharTotalBorrowed = document.getElementById("udharTotalBorrowed");
-    const udharNet           = document.getElementById("udharNet");
-    const udharPersons       = document.getElementById("udharPersons");
-    const udharModal         = document.getElementById("udharModal");
-    const udharModalClose    = document.getElementById("udharModalClose");
-    const udharCancelBtn     = document.getElementById("udharCancelBtn");
-    const udharForm          = document.getElementById("udharForm");
-    const udharPerson        = document.getElementById("udharPerson");
-    const udharKind          = document.getElementById("udharKind");
-    const udharAmount        = document.getElementById("udharAmount");
-    const udharNote          = document.getElementById("udharNote");
-    const udharDue           = document.getElementById("udharDue");
-
-    // ================================================================
-    // AUTH
-    // ================================================================
-
-    function setAuthMode(mode) {
-        authMode = mode;
-        authError.style.display = "none";
-        authError.textContent   = "";
-
-        if (mode === "login") {
-            tabLogin.classList.add("active");
-            tabSignup.classList.remove("active");
-            tabLogin.setAttribute("aria-selected", "true");
-            tabSignup.setAttribute("aria-selected", "false");
-            authSubmitBtn.textContent = "Sign In";
-            authSwitchHint.textContent = "Don't have an account?";
-            authToggleBtn.textContent  = "Create an account";
-            authPassword.setAttribute("autocomplete", "current-password");
-        } else {
-            tabSignup.classList.add("active");
-            tabLogin.classList.remove("active");
-            tabSignup.setAttribute("aria-selected", "true");
-            tabLogin.setAttribute("aria-selected", "false");
-            authSubmitBtn.textContent = "Create Account";
-            authSwitchHint.textContent = "Already have an account?";
-            authToggleBtn.textContent  = "Sign in";
-            authPassword.setAttribute("autocomplete", "new-password");
-        }
-    }
-
-    function showAuthError(msg) {
-        authError.textContent   = msg;
-        authError.style.display = "block";
-    }
-
-    async function handleAuthSubmit(e) {
-        e.preventDefault();
-        authError.style.display = "none";
-
-        const email    = authEmail.value.trim();
-        const password = authPassword.value;
-
-        if (!email || !password) {
-            showAuthError("Please fill in both email and password.");
-            return;
-        }
-
-        authSubmitBtn.disabled    = true;
-        authSubmitBtn.textContent = authMode === "login" ? "Signing in..." : "Creating account...";
-
-        try {
-            const res = await fetch(authMode === "login" ? "/api/login" : "/api/signup", {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ email, password }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || "Authentication failed.");
-
-            setAuth(data.token, data.user);
-            authEmail.value    = "";
-            authPassword.value = "";
-            showMainApp(data.user);
-
-        } catch (err) {
-            showAuthError(err.message);
-        } finally {
-            authSubmitBtn.disabled    = false;
-            authSubmitBtn.textContent = authMode === "login" ? "Sign In" : "Create Account";
-        }
-    }
-
-    function handleLogout() {
-        clearAuth();
-        resetAppState();
-        mainApp.style.display   = "none";
-        authScreen.style.display = "flex";
-        authEmail.value    = "";
-        authPassword.value = "";
-        setAuthMode("login");
-    }
-
-    function showMainApp(user) {
-        activeUser = user;
-        authScreen.style.display = "none";
-        mainApp.style.display    = "flex";
-
-        // Update UI with user info
-        const initials = (user.email || "U").charAt(0).toUpperCase();
-        sidebarEmail.textContent  = user.email;
-        sidebarAvatar.textContent = initials;
-        drawerEmail.textContent   = user.email;
-        drawerAvatar.textContent  = initials;
-
-        resetAppState();
-        loadChatHistory();
-        loadHomeCard();
-        switchTab("chat");
-    }
-
-    // ================================================================
-    // TAB SWITCHING
-    // ================================================================
-
-    const navBtns    = [navChat, navDashboard, navUdhar, document.getElementById("navInsights")];
-    const tabbarBtns = [tabbarChat, tabbarDashboard, tabbarUdhar, tabbarInsights];
-    const tabPanes   = {
-        chat:      tabPaneChat,
-        dashboard: tabPaneDashboard,
-        udhar:     tabPaneUdhar,
-        insights:  tabPaneInsights,
-    };
-
-    function switchTab(tab) {
-        currentTab = tab;
-
-        // Update sidebar
-        navBtns.forEach(btn => {
-            const isActive = btn.dataset.tab === tab;
-            btn.classList.toggle("active", isActive);
-            btn.setAttribute("aria-selected", String(isActive));
-        });
-
-        // Update tabbar
-        tabbarBtns.forEach(btn => {
-            btn.classList.toggle("active", btn.dataset.tab === tab);
-        });
-
-        // Update drawer items
-        document.querySelectorAll(".drawer-item[data-tab]").forEach(btn => {
-            btn.classList.toggle("active", btn.dataset.tab === tab);
-        });
-
-        // Show correct pane
-        Object.entries(tabPanes).forEach(([key, pane]) => {
-            pane.classList.toggle("active", key === tab);
-        });
-
-        // Lazy-load data
-        if (tab === "dashboard") loadDashboard();
-        if (tab === "udhar")     loadUdhar();
-        if (tab === "insights")  loadInsights();
-
-        closeMobileDrawer();
-    }
-
-    // ================================================================
-    // MOBILE DRAWER
-    // ================================================================
-
-    function openMobileDrawer() {
-        mobileDrawer.classList.add("open");
-        mobileOverlay.style.display = "block";
-        requestAnimationFrame(() => mobileOverlay.classList.add("visible"));
-    }
-
-    function closeMobileDrawer() {
-        mobileDrawer.classList.remove("open");
-        mobileOverlay.classList.remove("visible");
-        setTimeout(() => { mobileOverlay.style.display = "none"; }, 250);
-    }
-
-    mobileMenuBtn.addEventListener("click", openMobileDrawer);
-    mobileOverlay.addEventListener("click", closeMobileDrawer);
-    drawerClose.addEventListener("click", closeMobileDrawer);
-
-    // ================================================================
-    // STATE RESET
-    // ================================================================
-
-    function resetAppState() {
-        // Reset chat
-        chatMessages.innerHTML = "";
-        chatMessages.appendChild(chatEmpty);
-        chatEmpty.style.display = "flex";
-        chatInput.value = "";
-        autoResize();
-        isWaiting = false;
-        sendBtn.disabled = true;
-
-        // Reset dashboard visuals
-        dashTotalSpent.textContent  = "--";
-        dashTotalBudget.textContent = "--";
-        dashUdharNet.textContent    = "--";
-        dashCategoryBars.innerHTML  = '<div class="dash-empty">No spending recorded yet.</div>';
-        budgetVsActual.innerHTML    = '<div class="dash-empty">No budgets set yet.</div>';
-
-        // Clear canvas
-        clearCanvas(trendCanvas);
-        clearCanvas(dailyCanvas);
-
-        // Reset insights
-        recapSpent.textContent   = "--";
-        recapChange.textContent  = "--";
-        recapTopCat.textContent  = "--";
-        recapStreak.textContent  = "-- days";
-        insightCards.innerHTML   = '<div class="dash-empty">Log some expenses to see personalised insights.</div>';
-        goalsListInsights.innerHTML = '<div class="dash-empty">No goals set yet. Ask the assistant to help you create one.</div>';
-        safeSpendCard.style.display  = "none";
-        if (recapNarration) recapNarration.textContent = "";
-
-        // Reset home card
-        if (homeSafeSpend) homeSafeSpend.textContent = "--";
-        if (homeSavingsRate) homeSavingsRate.textContent = "--";
-        if (homeGoalProgress) homeGoalProgress.textContent = "--";
-        if (homeStreakBadge) homeStreakBadge.textContent = "-- day streak";
-
-        // Reset udhar
-        udharTotalLent.textContent     = "--";
-        udharTotalBorrowed.textContent = "--";
-        udharNet.textContent           = "--";
-        udharPersons.innerHTML         = '<div class="dash-empty">No udhar entries yet. Use "Add Entry" to get started.</div>';
-    }
-
-    function clearCanvas(canvas) {
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-
-    // ================================================================
-    // CHAT
-    // ================================================================
-
-    async function loadChatHistory() {
-        try {
-            const res = await authFetch("/api/chat/history");
-            if (!res.ok) return;
-            const data = await res.json();
-            if (!data.messages || data.messages.length === 0) return;
-
-            // Hide empty state since we have history
-            chatEmpty.style.display = "none";
-
-            data.messages.forEach(msg => {
-                appendMessage(msg.content, msg.role === "user" ? "user" : "assistant", false);
-            });
-            scrollToBottom();
-        } catch (err) {
-            console.warn("Could not load chat history:", err);
-        }
-    }
-
-    async function loadHomeCard() {
-        if (!activeUser) return;
-        try {
-            const [snapRes, streakRes] = await Promise.all([
-                authFetch("/api/snapshot"),
-                authFetch("/api/streak"),
-            ]);
-
-            if (snapRes.ok) {
-                const snap = await snapRes.json();
-                if (homeSafeSpend) {
-                    homeSafeSpend.textContent = snap.safe_to_spend_today !== null && snap.safe_to_spend_today !== undefined
-                        ? formatCurrency(snap.safe_to_spend_today)
-                        : "--";
-                }
-                if (homeSavingsRate) {
-                    homeSavingsRate.textContent = snap.savings_rate_pct !== null && snap.savings_rate_pct !== undefined
-                        ? `${snap.savings_rate_pct}%`
-                        : "--";
-                }
-                if (homeGoalProgress) {
-                    if (snap.goals && snap.goals.length > 0) {
-                        const topGoal = snap.goals[0];
-                        homeGoalProgress.textContent = `${topGoal.name} (${topGoal.pct_complete}%)`;
-                    } else {
-                        homeGoalProgress.textContent = "No goals set";
-                    }
-                }
-            }
-
-            if (streakRes.ok) {
-                const streakData = await streakRes.json();
-                if (homeStreakBadge) {
-                    const days = streakData.streak || 0;
-                    homeStreakBadge.textContent = `${days} day${days === 1 ? "" : "s"} streak`;
-                }
-            }
-        } catch (err) {
-            console.warn("Home card load error:", err);
-        }
-    }
-
-    function appendMessage(text, role, scroll = true) {
-        // Hide empty state on first real message
-        if (chatEmpty && chatEmpty.parentNode === chatMessages) {
-            chatEmpty.style.display = "none";
-        }
-
-        const row = document.createElement("div");
-        row.className = `message-row ${role}`;
-
-        const content = document.createElement("div");
-        content.className = "message-content";
-        content.textContent = text;
-
-        row.appendChild(content);
-        chatMessages.appendChild(row);
-
-        if (scroll) scrollToBottom();
-    }
-
-    function scrollToBottom() {
-        requestAnimationFrame(() => {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        });
-    }
-
-    function showTyping() {
-        const row = document.createElement("div");
-        row.className = "typing-row";
-        row.id = "typingRow";
-        const dots = document.createElement("div");
-        dots.className = "typing-dots";
-        dots.innerHTML = `<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>`;
-        row.appendChild(dots);
-        chatMessages.appendChild(row);
-        scrollToBottom();
-    }
-
-    function hideTyping() {
-        const el = document.getElementById("typingRow");
-        if (el) el.remove();
-    }
-
-    async function sendMessage(text) {
-        text = text.trim();
-        if (!text || isWaiting || !activeUser) return;
-
-        isWaiting = true;
-        sendBtn.disabled = true;
-        chatInput.value  = "";
-        autoResize();
-
-        appendMessage(text, "user");
-        showTyping();
-
-        try {
-            const res = await authFetch("/api/chat", {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ message: text, session_id: activeSessionId }),
-            });
-
-            hideTyping();
-
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-
-            if (data.user_id && activeUser && data.user_id !== activeUser.id) {
-                console.warn("[Security] Stale reply discarded.");
-                return;
-            }
-
-            appendMessage(data.reply, "assistant");
-
-            // Refresh data
-            if (currentTab === "dashboard") loadDashboard();
-            if (currentTab === "insights") loadInsights();
-            loadHomeCard();
-
-        } catch (err) {
-            hideTyping();
-            appendMessage("Something went wrong — please try again.", "assistant");
-            console.error("Chat error:", err);
-        } finally {
-            isWaiting    = false;
-            sendBtn.disabled = chatInput.value.trim().length === 0;
-        }
-    }
-
-    function autoResize() {
-        chatInput.style.height = "auto";
-        const maxHeight = 144;
-        chatInput.style.height = Math.min(chatInput.scrollHeight, maxHeight) + "px";
-        sendBtn.disabled = chatInput.value.trim().length === 0 || isWaiting;
-    }
-
-    // Chat form events
-    chatForm.addEventListener("submit", e => {
-        e.preventDefault();
-        sendMessage(chatInput.value);
+  }
+
+  function showApp() {
+    authScreen.style.display = 'none';
+    hideOnboarding();
+    appScreen.classList.add('active');
+    updateUserUI();
+    loadChatHistory();
+    loadGlanceData();
+    switchView('chat');
+  }
+
+  function updateUserUI() {
+    if (!currentUser) return;
+    const email = currentUser.email || '';
+    userEmailEl.textContent = email;
+    userAvatarEl.textContent = email.charAt(0).toUpperCase();
+  }
+
+  // ---------- Navigation ----------
+
+  function switchView(view) {
+    currentView = view;
+
+    // Update nav items (sidebar)
+    $$('.nav-item').forEach((n) => {
+      n.classList.toggle('active', n.dataset.view === view);
     });
 
-    chatInput.addEventListener("input", autoResize);
-
-    chatInput.addEventListener("keydown", e => {
-        if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage(chatInput.value);
-        }
+    // Update tabs (mobile)
+    $$('.tab-item').forEach((t) => {
+      t.classList.toggle('active', t.dataset.view === view);
     });
 
-    // Suggestion chips
-    document.addEventListener("click", e => {
-        const chip = e.target.closest(".chip");
-        if (chip && chip.dataset.message) {
-            chatInput.value = chip.dataset.message;
-            autoResize();
-            sendMessage(chip.dataset.message);
-        }
+    // Show correct panel
+    $$('.view-panel').forEach((p) => {
+      p.classList.toggle('active', p.id === 'view-' + view);
     });
 
-    // Visual Viewport API for keyboard handling
-    if (window.visualViewport) {
-        let lastHeight = window.visualViewport.height;
-        window.visualViewport.addEventListener("resize", () => {
-            const currentHeight = window.visualViewport.height;
-            if (currentHeight < lastHeight) {
-                // Keyboard opened — scroll to bottom so composer stays visible
-                scrollToBottom();
-            }
-            lastHeight = currentHeight;
-        });
+    // Close mobile sidebar
+    closeSidebar();
+
+    // Load data for the view
+    if (view === 'dashboard') loadDashboard();
+    if (view === 'udhar') loadUdhar();
+    if (view === 'insights') loadInsights();
+  }
+
+  // Nav click handlers
+  $$('.nav-item').forEach((n) => {
+    n.addEventListener('click', () => switchView(n.dataset.view));
+  });
+  $$('.tab-item').forEach((t) => {
+    t.addEventListener('click', () => switchView(t.dataset.view));
+  });
+
+  // Mobile sidebar
+  function openSidebar() {
+    sidebar.classList.add('open');
+    sidebarOverlay.classList.add('visible');
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('visible');
+  }
+
+  mobileMenuBtn.addEventListener('click', openSidebar);
+  sidebarOverlay.addEventListener('click', closeSidebar);
+
+  // ---------- Chat ----------
+
+  // Auto-grow textarea
+  composerInput.addEventListener('input', () => {
+    composerInput.style.height = 'auto';
+    composerInput.style.height = Math.min(composerInput.scrollHeight, 150) + 'px';
+    composerSend.classList.toggle('ready', composerInput.value.trim().length > 0);
+    composerSend.disabled = composerInput.value.trim().length === 0;
+  });
+
+  // Send on Enter (Shift+Enter for newline)
+  composerInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  composerSend.addEventListener('click', sendMessage);
+
+  // Suggestion chips
+  $$('.chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      composerInput.value = chip.dataset.msg;
+      composerInput.dispatchEvent(new Event('input'));
+      sendMessage();
+    });
+  });
+
+  async function sendMessage() {
+    const text = composerInput.value.trim();
+    if (!text || isSending) return;
+
+    isSending = true;
+
+    // Hide welcome
+    chatWelcome.style.display = 'none';
+
+    // Add user message
+    appendMessage('user', text);
+
+    // Clear input
+    composerInput.value = '';
+    composerInput.style.height = 'auto';
+    composerSend.classList.remove('ready');
+    composerSend.disabled = true;
+
+    // Show typing
+    typingIndicator.classList.add('visible');
+    scrollToBottom();
+
+    try {
+      const data = await api('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message: text, session_id: 'default' }),
+      });
+
+      typingIndicator.classList.remove('visible');
+      appendMessage('assistant', data.reply);
+    } catch (err) {
+      typingIndicator.classList.remove('visible');
+      appendMessage('assistant', 'Something went wrong. Please try again.');
+      showToast(err.message, 'error');
+    } finally {
+      isSending = false;
+    }
+  }
+
+  function appendMessage(role, content, timestamp) {
+    const msgEl = document.createElement('div');
+    msgEl.className = 'msg ' + role;
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'msg-content';
+    // Render text with line breaks
+    contentEl.innerHTML = formatMessageContent(content);
+    msgEl.appendChild(contentEl);
+
+    if (timestamp) {
+      const timeEl = document.createElement('div');
+      timeEl.className = 'msg-time';
+      timeEl.textContent = formatTime(timestamp);
+      msgEl.appendChild(timeEl);
     }
 
-    // ================================================================
-    // DASHBOARD
-    // ================================================================
+    // Insert before typing indicator
+    messageListInner.appendChild(msgEl);
+    scrollToBottom();
+  }
 
-    const CATEGORY_COLORS = {
-        food:          "#F97316",
-        groceries:     "#22C55E",
-        travel:        "#38BDF8",
-        rent:          "#A855F7",
-        bills:         "#EC4899",
-        shopping:      "#EAB308",
-        health:        "#14B8A6",
-        entertainment: "#6366F1",
-        other:         "#71717A",
-    };
+  function formatMessageContent(text) {
+    if (!text) return '';
+    // Escape HTML, then convert newlines to <br>
+    let html = escapeHtml(text);
+    html = html.replace(/\n/g, '<br>');
+    // Bold: **text**
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    return html;
+  }
 
-    function getCatColor(cat) {
-        return CATEGORY_COLORS[cat.toLowerCase()] || "#5865F2";
+  // Scroll management
+  messageList.addEventListener('scroll', () => {
+    const threshold = 100;
+    const isNear =
+      messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < threshold;
+    userNearBottom = isNear;
+    jumpLatest.classList.toggle('visible', !isNear);
+  });
+
+  jumpLatest.addEventListener('click', () => {
+    scrollToBottom(true);
+    jumpLatest.classList.remove('visible');
+  });
+
+  function scrollToBottom(force) {
+    if (force || userNearBottom) {
+      requestAnimationFrame(() => {
+        messageList.scrollTop = messageList.scrollHeight;
+      });
     }
+  }
 
-    async function loadDashboard() {
-        if (!activeUser) return;
-        try {
-            const res = await authFetch("/api/dashboard");
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            renderDashboard(data);
-        } catch (err) {
-            console.error("Dashboard error:", err);
-        }
+  // Load chat history
+  async function loadChatHistory() {
+    try {
+      const data = await api('/api/chat/history');
+      if (data.messages && data.messages.length > 0) {
+        chatWelcome.style.display = 'none';
+        // Clear existing messages
+        messageListInner.querySelectorAll('.msg').forEach((m) => m.remove());
+        data.messages.forEach((m) => {
+          appendMessage(m.role, m.content, m.created_at);
+        });
+      }
+    } catch (err) {
+      // Silent fail — first use
     }
+  }
 
-    function renderDashboard(data) {
-        dashMonth.textContent = monthLabel(data.month);
-        dashDailyMonth.textContent = monthLabel(data.month);
+  // Load glance data for welcome card
+  async function loadGlanceData() {
+    try {
+      const [snapshot, streak, goals] = await Promise.all([
+        api('/api/snapshot').catch(() => null),
+        api('/api/streak').catch(() => null),
+        api('/api/goals').catch(() => null),
+      ]);
 
-        dashTotalSpent.textContent = formatCurrency(data.total_spent || 0);
-        dashTotalBudget.textContent = data.total_budget
-            ? formatCurrency(data.total_budget)
-            : "Not set";
+      if (snapshot) {
+        const safeSpend = snapshot.safe_to_spend_daily;
+        const savingsRate = snapshot.savings_rate_pct;
+        $('#glance-safe').textContent = safeSpend != null ? formatCurrency(safeSpend) : '--';
+        $('#glance-savings').textContent =
+          savingsRate != null ? savingsRate.toFixed(0) + '%' : '--';
+      }
 
-        const net = data.udhar_net || 0;
-        dashUdharNet.textContent = formatCurrency(Math.abs(net));
-        dashUdharNet.style.color = net >= 0 ? "var(--green)" : "var(--red)";
+      if (streak) {
+        const days = streak.current_streak || 0;
+        $('#glance-streak').textContent = days + ' day streak';
+      }
 
-        // Category bars
-        renderCategoryBars(data.categories || []);
-
-        // Budget vs actual
-        renderBudgetVsActual(data.categories || []);
-
-        // Charts
-        renderTrendChart(data.monthly_trends || []);
-        renderDailyChart(data.daily_spend || []);
+      if (goals && goals.goals && goals.goals.length > 0) {
+        const top = goals.goals[0];
+        const pct = top.target_amount > 0
+          ? Math.round((top.saved_amount / top.target_amount) * 100)
+          : 0;
+        $('#glance-goal').textContent = pct + '%';
+      }
+    } catch (err) {
+      // Silent
     }
+  }
 
-    function renderCategoryBars(categories) {
-        if (!categories.length) {
-            dashCategoryBars.innerHTML = '<div class="dash-empty">No spending recorded yet.</div>';
-            return;
-        }
+  // ---------- Dashboard ----------
 
-        const max = Math.max(...categories.map(c => c.spent), 1);
-        dashCategoryBars.innerHTML = "";
+  async function loadDashboard() {
+    dashboardLoader.style.display = '';
+    dashboardContent.style.display = 'none';
 
-        categories.slice(0, 8).forEach(cat => {
-            const pct = Math.round((cat.spent / max) * 100);
-            const row = document.createElement("div");
-            row.className = "cat-bar-row";
-            row.innerHTML = `
-                <div class="cat-bar-meta">
-                    <span class="cat-bar-name">${escHtml(cat.category)}</span>
-                    <span class="cat-bar-amount">${formatCurrency(cat.spent)}</span>
-                </div>
-                <div class="cat-bar-track">
-                    <div class="cat-bar-fill" style="width:${pct}%;background:${getCatColor(cat.category)};"></div>
-                </div>
-            `;
-            dashCategoryBars.appendChild(row);
-        });
+    try {
+      const [summary, dashboard, snapshot, insightsData] = await Promise.all([
+        api('/api/summary'),
+        api('/api/dashboard'),
+        api('/api/snapshot').catch(() => null),
+        api('/api/insights').catch(() => null),
+      ]);
+
+      renderDashboard(summary, dashboard, snapshot, insightsData);
+    } catch (err) {
+      dashboardContent.innerHTML =
+        '<div class="empty-state"><p>Could not load dashboard data.</p></div>';
+      dashboardContent.style.display = '';
+    } finally {
+      dashboardLoader.style.display = 'none';
     }
+  }
 
-    function renderBudgetVsActual(categories) {
-        const withBudget = categories.filter(c => c.budget !== null);
-        if (!withBudget.length) {
-            budgetVsActual.innerHTML = '<div class="dash-empty">No budgets set yet.</div>';
-            return;
-        }
+  function animateNumber(el, target, formatFn) {
+    if (!el || isNaN(target)) return;
+    const start = 0;
+    const duration = 450;
+    const startTime = performance.now();
 
-        budgetVsActual.innerHTML = "";
-        withBudget.forEach(cat => {
-            const pct = Math.min(cat.percentage || 0, 120);
-            const tier = statusTier(cat.percentage);
-            const row = document.createElement("div");
-            row.className = "bva-row";
-            row.innerHTML = `
-                <span class="bva-label">${escHtml(cat.category)}</span>
-                <div class="bva-track">
-                    <div class="bva-fill ${tier}" style="width:${Math.min(pct, 100)}%"></div>
-                </div>
-                <span class="bva-pct ${tier}">${Math.round(cat.percentage || 0)}%</span>
-            `;
-            budgetVsActual.appendChild(row);
-        });
+    function tick(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(start + (target - start) * ease);
+      el.textContent = formatFn(current);
+      if (progress < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        el.textContent = formatFn(target);
+      }
     }
+    requestAnimationFrame(tick);
+  }
 
-    function renderTrendChart(trends) {
-        const ctx = trendCanvas.getContext("2d");
-        const W = trendCanvas.width;
-        const H = trendCanvas.height;
-        ctx.clearRect(0, 0, W, H);
+  function renderDashboard(summary, dashboard, snapshot, insightsData) {
+    const totalSpent = summary.total_spent || dashboard.total_spent || 0;
+    const totalBudget = summary.total_budget || dashboard.total_budget || 0;
+    const txnCount = (summary.recent_transactions || []).length;
+    const recentTxns = summary.recent_transactions || [];
 
-        if (!trends.length) {
-            ctx.fillStyle = "rgba(255,255,255,0.1)";
-            ctx.font = "12px Inter, sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("No data yet", W / 2, H / 2);
-            return;
-        }
+    // Parse categories from either summary or dashboard format
+    const rawCategories = summary.categories || dashboard.categories || summary.category_breakdown || [];
+    const categoryBreakdown = rawCategories
+      .map((c) => ({
+        category: c.category || '',
+        total: typeof c.spent === 'number' ? c.spent : (typeof c.total === 'number' ? c.total : 0),
+        budget: typeof c.budget === 'number' ? c.budget : 0,
+      }))
+      .filter((c) => c.total > 0)
+      .sort((a, b) => b.total - a.total);
 
-        const pad = { top: 16, right: 16, bottom: 30, left: 48 };
-        const chartW = W - pad.left - pad.right;
-        const chartH = H - pad.top - pad.bottom;
-        const max = Math.max(...trends.map(t => t.total), 1);
-
-        const xs = trends.map((_, i) => pad.left + (i / (trends.length - 1 || 1)) * chartW);
-        const ys = trends.map(t => pad.top + chartH - (t.total / max) * chartH);
-
-        // Grid lines
-        ctx.strokeStyle = "rgba(255,255,255,0.05)";
-        ctx.lineWidth = 1;
-        [0, 0.25, 0.5, 0.75, 1].forEach(frac => {
-            const y = pad.top + chartH * frac;
-            ctx.beginPath();
-            ctx.moveTo(pad.left, y);
-            ctx.lineTo(pad.left + chartW, y);
-            ctx.stroke();
-        });
-
-        // Fill area
-        const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + chartH);
-        grad.addColorStop(0, "rgba(88,101,242,0.25)");
-        grad.addColorStop(1, "rgba(88,101,242,0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.moveTo(xs[0], pad.top + chartH);
-        xs.forEach((x, i) => ctx.lineTo(x, ys[i]));
-        ctx.lineTo(xs[xs.length - 1], pad.top + chartH);
-        ctx.closePath();
-        ctx.fill();
-
-        // Line
-        ctx.strokeStyle = "#5865F2";
-        ctx.lineWidth = 2;
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        xs.forEach((x, i) => i === 0 ? ctx.moveTo(x, ys[i]) : ctx.lineTo(x, ys[i]));
-        ctx.stroke();
-
-        // Dots
-        xs.forEach((x, i) => {
-            ctx.fillStyle = "#5865F2";
-            ctx.beginPath();
-            ctx.arc(x, ys[i], 3, 0, Math.PI * 2);
-            ctx.fill();
-        });
-
-        // X labels
-        ctx.fillStyle = "rgba(255,255,255,0.35)";
-        ctx.font = "10px Inter, sans-serif";
-        ctx.textAlign = "center";
-        trends.forEach((t, i) => {
-            const label = t.month ? t.month.slice(5) : "";
-            ctx.fillText(label, xs[i], H - 6);
-        });
-
-        // Y axis
-        ctx.textAlign = "right";
-        [0, 0.5, 1].forEach(frac => {
-            const val = Math.round(max * (1 - frac));
-            const y = pad.top + chartH * frac;
-            ctx.fillText(val >= 1000 ? (val / 1000).toFixed(0) + "k" : val, pad.left - 6, y + 4);
-        });
-    }
-
-    function renderDailyChart(daily) {
-        const ctx = dailyCanvas.getContext("2d");
-        const W = dailyCanvas.width;
-        const H = dailyCanvas.height;
-        ctx.clearRect(0, 0, W, H);
-
-        if (!daily.length) {
-            ctx.fillStyle = "rgba(255,255,255,0.1)";
-            ctx.font = "12px Inter, sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("No daily data yet", W / 2, H / 2);
-            return;
-        }
-
-        const pad = { top: 8, right: 16, bottom: 28, left: 48 };
-        const chartW = W - pad.left - pad.right;
-        const chartH = H - pad.top - pad.bottom;
-        const max = Math.max(...daily.map(d => d.total), 1);
-        const barW = Math.max(2, (chartW / daily.length) - 3);
-
-        daily.forEach((d, i) => {
-            const barH = (d.total / max) * chartH;
-            const x = pad.left + (i / daily.length) * chartW;
-            const y = pad.top + chartH - barH;
-
-            ctx.fillStyle = "rgba(88,101,242,0.7)";
-            ctx.beginPath();
-            ctx.roundRect(x, y, barW, barH, 2);
-            ctx.fill();
-
-            // Day label every ~5 days
-            if (i % 5 === 0) {
-                ctx.fillStyle = "rgba(255,255,255,0.3)";
-                ctx.font = "9px Inter, sans-serif";
-                ctx.textAlign = "center";
-                const day = d.day ? d.day.slice(-2) : i + 1;
-                ctx.fillText(day, x + barW / 2, H - 4);
-            }
-        });
-    }
-
-    // ================================================================
-    // UDHAR
-    // ================================================================
-
-    async function loadUdhar() {
-        if (!activeUser) return;
-        try {
-            const res = await authFetch("/api/udhar");
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            renderUdhar(data);
-        } catch (err) {
-            console.error("Udhar error:", err);
-        }
-    }
-
-    function renderUdhar(data) {
-        udharTotalLent.textContent     = formatCurrency(data.total_lent || 0);
-        udharTotalBorrowed.textContent = formatCurrency(data.total_borrowed || 0);
-        const net = data.net || 0;
-        udharNet.textContent = (net >= 0 ? "+" : "-") + formatCurrency(Math.abs(net));
-        udharNet.style.color = net >= 0 ? "var(--green)" : "var(--red)";
-
-        if (!data.persons || !data.persons.length) {
-            udharPersons.innerHTML = '<div class="dash-empty">No udhar entries yet. Use "Add Entry" to get started.</div>';
-            return;
-        }
-
-        udharPersons.innerHTML = "";
-        data.persons.forEach(person => renderPersonCard(person));
-    }
-
-    function renderPersonCard(person) {
-        const net = person.net;
-        const netClass = net > 0 ? "owed" : net < 0 ? "owes" : "settled";
-        const netLabel = net > 0 ? "owes you" : net < 0 ? "you owe" : "settled";
-        const netDisplay = (net >= 0 ? "" : "") + formatCurrency(Math.abs(net));
-
-        const card = document.createElement("div");
-        card.className = "person-card";
-
-        card.innerHTML = `
-            <div class="person-card-header" role="button" tabindex="0" aria-expanded="false">
-                <span class="person-name">${escHtml(person.name)}</span>
-                <div class="person-net">
-                    <span class="person-net-amount ${netClass}">${escHtml(netDisplay)}</span>
-                    <span class="person-net-label">${escHtml(netLabel)}</span>
-                </div>
-            </div>
-            <div class="person-history" id="history-${escHtml(person.key)}">
-                ${(person.history || []).map(h => `
-                    <div class="history-item">
-                        <div class="history-left">
-                            <span class="history-kind ${h.kind}">${h.kind}</span>
-                            <span>${escHtml(h.note || "")}</span>
-                            <span style="color:var(--text-muted)">${formatDate(h.entry_date)}</span>
-                        </div>
-                        <span class="history-amount">${formatCurrency(h.amount)}</span>
-                    </div>
-                `).join("")}
-                <button type="button" class="person-repay-btn" data-person="${escHtml(person.name)}">
-                    Record repayment
-                </button>
-            </div>
-        `;
-
-        // Toggle history on header click
-        const header = card.querySelector(".person-card-header");
-        const history = card.querySelector(".person-history");
-        header.addEventListener("click", () => {
-            const open = history.classList.toggle("open");
-            header.setAttribute("aria-expanded", String(open));
-        });
-        header.addEventListener("keydown", e => {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); header.click(); }
-        });
-
-        // Repay button
-        const repayBtn = card.querySelector(".person-repay-btn");
-        repayBtn.addEventListener("click", async () => {
-            const personName = repayBtn.dataset.person;
-            const amountStr = prompt(`Record repayment for ${personName} — enter amount (INR):`);
-            if (!amountStr) return;
-            const amount = parseFloat(amountStr);
-            if (isNaN(amount) || amount <= 0) { alert("Invalid amount."); return; }
-            try {
-                const res = await authFetch("/api/udhar/repay", {
-                    method:  "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body:    JSON.stringify({ person_name: personName, amount }),
-                });
-                if (!res.ok) throw new Error("Failed");
-                loadUdhar();
-            } catch {
-                alert("Could not record repayment.");
-            }
-        });
-
-        udharPersons.appendChild(card);
-    }
-
-    // Udhar modal
-    addUdharBtn.addEventListener("click", () => {
-        udharForm.reset();
-        udharModal.style.display = "flex";
+    // Build budgets map
+    const budgets = {};
+    rawCategories.forEach((c) => {
+      if (c.category && typeof c.budget === 'number' && c.budget > 0) {
+        budgets[c.category.toLowerCase()] = c.budget;
+      }
     });
 
-    [udharModalClose, udharCancelBtn].forEach(btn => {
-        btn.addEventListener("click", () => { udharModal.style.display = "none"; });
-    });
+    // Parse daily spend
+    const rawDaily = dashboard.daily_spend || [];
+    const dailySpend = rawDaily.map((d) => ({
+      date: d.day || d.date || '',
+      total: typeof d.total === 'number' ? d.total : (typeof d.amount === 'number' ? d.amount : 0),
+    }));
 
-    udharModal.addEventListener("click", e => {
-        if (e.target === udharModal) udharModal.style.display = "none";
-    });
+    // Calculations for top stat cards
+    const budgetRemaining = Math.max(0, totalBudget - totalSpent);
+    const budgetPctLeft = totalBudget > 0 ? Math.round(((totalBudget - totalSpent) / totalBudget) * 100) : 0;
 
-    udharForm.addEventListener("submit", async e => {
-        e.preventDefault();
-        const payload = {
-            person_name: udharPerson.value.trim(),
-            kind:        udharKind.value,
-            amount:      parseFloat(udharAmount.value),
-            note:        udharNote.value.trim(),
-            due_date:    udharDue.value || null,
-        };
-        if (!payload.person_name || !payload.amount) return;
-        try {
-            const res = await authFetch("/api/udhar", {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify(payload),
-            });
-            if (!res.ok) throw new Error("Failed");
-            udharModal.style.display = "none";
-            loadUdhar();
-        } catch {
-            alert("Could not save udhar entry.");
-        }
-    });
-
-    // ================================================================
-    // UTILITY
-    // ================================================================
-
-    function escHtml(str) {
-        if (str === null || str === undefined) return "";
-        return String(str)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
+    let savingsThisMonth = 0;
+    let savingsRate = 0;
+    if (snapshot && snapshot.monthly_income && snapshot.monthly_income > 0) {
+      savingsThisMonth = Math.max(0, snapshot.monthly_income - totalSpent);
+      savingsRate = Math.round((savingsThisMonth / snapshot.monthly_income) * 100);
+    } else if (budgets['emergency fund'] || budgets['sip / investments']) {
+      savingsThisMonth = (budgets['emergency fund'] || 0) + (budgets['sip / investments'] || 0);
+      savingsRate = 0;
     }
 
-    // ================================================================
-    // INSIGHTS TAB
-    // ================================================================
+    // Potential savings: computed strictly from user's actual spending data
+    const discCats = ['eating out', 'shopping', 'entertainment', 'personal care', 'miscellaneous', 'food'];
+    const discSpend = categoryBreakdown
+      .filter((c) => discCats.includes(c.category.toLowerCase()))
+      .reduce((sum, c) => sum + (c.total || 0), 0);
 
-    async function loadInsights() {
-        if (!activeUser) return;
-        try {
-            const [recapRes, insightsRes, goalsRes, snapRes] = await Promise.all([
-                authFetch("/api/recap"),
-                authFetch("/api/insights"),
-                authFetch("/api/goals"),
-                authFetch("/api/snapshot"),
-            ]);
-
-            if (recapRes.ok) {
-                const recap = await recapRes.json();
-                renderRecap(recap);
-            }
-            if (insightsRes.ok) {
-                const { insights } = await insightsRes.json();
-                renderInsightCards(insights || []);
-            }
-            if (goalsRes.ok) {
-                const { goals } = await goalsRes.json();
-                renderGoals(goals || []);
-            }
-            if (snapRes.ok) {
-                const snap = await snapRes.json();
-                if (snap.safe_to_spend_today !== null && snap.safe_to_spend_today !== undefined) {
-                    safeSpendCard.style.display = "flex";
-                    safeAmount.textContent = formatCurrency(snap.safe_to_spend_today);
-                } else {
-                    safeSpendCard.style.display = "none";
-                }
-            }
-        } catch (err) {
-            console.error("Insights load error:", err);
-        }
-    }
-
-    function renderRecap(recap) {
-        recapSpent.textContent = formatCurrency(recap.total_spent || 0);
-
-        const changePct = recap.spend_change_pct;
-        if (changePct !== null && changePct !== undefined) {
-            const sign = changePct > 0 ? "+" : "";
-            recapChange.textContent = `${sign}${changePct}%`;
-            recapChange.className = "recap-value " + (changePct > 0 ? "negative" : "positive");
-        } else {
-            recapChange.textContent = "First week";
-        }
-
-        recapTopCat.textContent = recap.top_category ? recap.top_category.category : "None";
-        recapStreak.textContent = `${recap.logging_streak || 0} days`;
-
-        if (recap.narration && recapNarration) {
-            recapNarration.textContent = recap.narration;
-            recapNarration.style.display = "block";
-        } else if (recapNarration) {
-            recapNarration.style.display = "none";
-        }
-    }
-
-    function renderInsightCards(insights) {
-        if (!insights.length) {
-            insightCards.innerHTML = '<div class="dash-empty">Log some expenses and income to see personalised insights.</div>';
-            return;
-        }
-        insightCards.innerHTML = "";
-        insights.forEach(ins => {
-            const card = document.createElement("div");
-            let tier = "healthy";
-            if (ins.id === "savings_rate" && ins.value < 20) tier = "warning";
-            if (ins.id === "emergency_fund" && !ins.healthy) tier = "warning";
-            if (ins.id === "goals_behind" && ins.value > 0) tier = "warning";
-            if (ins.id === "top_category" && ins.direction === "up") tier = "alert";
-            card.className = `insight-card ${tier}`;
-
-            let valueDisplay = "";
-            if (ins.unit === "%" ) valueDisplay = `${ins.value}%`;
-            else if (ins.unit === "months") valueDisplay = `${ins.value} mo`;
-            else if (ins.value !== undefined && typeof ins.value === "number" && !ins.unit) {
-                valueDisplay = formatCurrency(ins.value);
-            } else {
-                valueDisplay = String(ins.value);
-            }
-
-            let extra = "";
-            if (ins.id === "top_category" && ins.change_pct !== null && ins.change_pct !== undefined) {
-                const sign = ins.change_pct > 0 ? "+" : "";
-                const dirClass = ins.direction === "up" ? "insight-direction-up" : "insight-direction-down";
-                extra = `<span class="${dirClass}">${sign}${ins.change_pct}% vs last month</span>`;
-            }
-
-            card.innerHTML = `
-                <div class="insight-card-title">${escHtml(ins.title)}</div>
-                <div class="insight-card-value">${escHtml(valueDisplay)} ${extra}</div>
-                <div class="insight-card-note">${escHtml(ins.note || "")}</div>
-            `;
-            insightCards.appendChild(card);
-        });
-    }
-
-    function renderGoals(goals) {
-        if (!goals.length) {
-            goalsListInsights.innerHTML = '<div class="dash-empty">No goals set yet. Use "Add Goal" or ask the assistant.</div>';
-            return;
-        }
-        goalsListInsights.innerHTML = "";
-        goals.forEach(g => {
-            const fillClass = g.pct_complete >= 100 ? "complete" : "";
-            const paceHtml = g.pace ? `<span class="goal-pace ${g.pace}">${g.pace === "on_pace" ? "On pace" : "Behind"}</span>` : "";
-            const reqHtml = g.required_monthly ? `Need ${formatCurrency(g.required_monthly)}/mo` : "";
-
-            const row = document.createElement("div");
-            row.className = "goal-row";
-            row.innerHTML = `
-                <div class="goal-row-header">
-                    <span class="goal-name">${escHtml(g.name)}</span>
-                    <span class="goal-pct">${g.pct_complete}%</span>
-                </div>
-                <div class="goal-progress-track">
-                    <div class="goal-progress-fill ${fillClass}" style="width:${Math.min(g.pct_complete,100)}%"></div>
-                </div>
-                <div class="goal-meta">
-                    <span>${formatCurrency(g.saved_amount)} of ${formatCurrency(g.target_amount)}</span>
-                    <span>${reqHtml}</span>
-                    ${paceHtml}
-                </div>
-            `;
-            goalsListInsights.appendChild(row);
-        });
-    }
-
-    // ================================================================
-    // GOAL ADD MODAL (injected dynamically)
-    // ================================================================
-
-    (function setupGoalModal() {
-        // Create modal HTML
-        const modalEl = document.createElement("div");
-        modalEl.id = "goalModal";
-        modalEl.className = "modal-backdrop";
-        modalEl.style.display = "none";
-        modalEl.setAttribute("role", "dialog");
-        modalEl.setAttribute("aria-modal", "true");
-        modalEl.setAttribute("aria-labelledby", "goalModalTitle");
-        modalEl.innerHTML = `
-            <div class="modal">
-                <div class="modal-header">
-                    <h3 id="goalModalTitle">Add Savings Goal</h3>
-                    <button type="button" class="modal-close" id="goalModalClose" aria-label="Close">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    </button>
-                </div>
-                <form id="goalForm">
-                    <div class="modal-body">
-                        <div class="form-field">
-                            <label for="goalName">Goal name</label>
-                            <input type="text" id="goalName" placeholder="e.g. Emergency fund, New phone" required>
-                        </div>
-                        <div class="form-field">
-                            <label for="goalTarget">Target amount (INR)</label>
-                            <input type="number" id="goalTarget" placeholder="e.g. 60000" min="1" required>
-                        </div>
-                        <div class="form-field">
-                            <label for="goalDate">Target date (optional)</label>
-                            <input type="date" id="goalDate">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn-ghost" id="goalCancelBtn">Cancel</button>
-                        <button type="submit" class="btn-primary">Save Goal</button>
-                    </div>
-                </form>
-            </div>
-        `;
-        document.body.appendChild(modalEl);
-
-        const goalForm      = document.getElementById("goalForm");
-        const goalModalClose= document.getElementById("goalModalClose");
-        const goalCancelBtn = document.getElementById("goalCancelBtn");
-
-        function openGoalModal() { goalForm.reset(); modalEl.style.display = "flex"; }
-        function closeGoalModal() { modalEl.style.display = "none"; }
-
-        if (addGoalBtn) addGoalBtn.addEventListener("click", openGoalModal);
-        goalModalClose.addEventListener("click", closeGoalModal);
-        goalCancelBtn.addEventListener("click", closeGoalModal);
-        modalEl.addEventListener("click", e => { if (e.target === modalEl) closeGoalModal(); });
-
-        goalForm.addEventListener("submit", async e => {
-            e.preventDefault();
-            const name   = document.getElementById("goalName").value.trim();
-            const target = parseFloat(document.getElementById("goalTarget").value);
-            const date   = document.getElementById("goalDate").value || null;
-            if (!name || !target) return;
-
-            try {
-                const res = await authFetch("/api/goals", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name, target_amount: target, target_date: date }),
-                });
-                if (!res.ok) throw new Error("Failed");
-                closeGoalModal();
-                loadInsights();
-            } catch {
-                alert("Could not save goal.");
-            }
-        });
-    })();
-
-    // ================================================================
-    // EVENT WIRING
-    // ================================================================
-
-    // Auth
-    tabLogin.addEventListener("click",  () => setAuthMode("login"));
-    tabSignup.addEventListener("click", () => setAuthMode("signup"));
-    authToggleBtn.addEventListener("click", () => setAuthMode(authMode === "login" ? "signup" : "login"));
-    authForm.addEventListener("submit", handleAuthSubmit);
-    logoutBtn.addEventListener("click",  handleLogout);
-    drawerLogout.addEventListener("click", handleLogout);
-
-    // Sidebar nav
-    navBtns.forEach(btn => {
-        btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-
-    // Tabbar
-    tabbarBtns.forEach(btn => {
-        btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-
-    // Drawer nav items
-    document.querySelectorAll(".drawer-item[data-tab]").forEach(btn => {
-        btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-
-    // ================================================================
-    // INIT
-    // ================================================================
-
-    const savedToken = getToken();
-    const savedUser  = getUser();
-
-    if (savedToken && savedUser) {
-        activeToken = savedToken;
-        showMainApp(savedUser);
+    let potentialSavings = 0;
+    let potentialSub = 'Identified opportunities';
+    if (discSpend > 0) {
+      potentialSavings = Math.round(discSpend * 0.15); // 15% trim opportunity
+      potentialSub = '15% trim on discretionary';
     } else {
-        authScreen.style.display = "flex";
-        mainApp.style.display    = "none";
+      const overruns = categoryBreakdown
+        .filter((c) => budgets[c.category.toLowerCase()] && c.total > budgets[c.category.toLowerCase()])
+        .reduce((sum, c) => sum + (c.total - budgets[c.category.toLowerCase()]), 0);
+      if (overruns > 0) {
+        potentialSavings = Math.round(overruns);
+        potentialSub = 'From budget overruns';
+      } else if (budgetRemaining > 0) {
+        potentialSavings = Math.round(budgetRemaining * 0.15);
+        potentialSub = 'From unspent budget buffer';
+      } else {
+        potentialSavings = 0;
+        potentialSub = 'Track expenses to unlock';
+      }
     }
 
-    // PWA Service Worker
-    if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => {
-            navigator.serviceWorker.register("/sw.js").catch(err => {
-                console.warn("[SW] Registration:", err);
-            });
-        });
+    // AI Insight determination from actual data
+    let insightTitle = 'FINANCIAL HABIT SUMMARY';
+    let insightText = '';
+    let insightPrompt = '';
+
+    if (categoryBreakdown.length > 0) {
+      const top = categoryBreakdown[0];
+      const pct = totalSpent > 0 ? Math.round((top.total / totalSpent) * 100) : 0;
+      const topLimit = budgets[top.category.toLowerCase()] || 0;
+      if (topLimit > 0 && top.total > topLimit) {
+        insightTitle = `OVER-BUDGET: ${top.category.toUpperCase()}`;
+        insightText = `You spent ${formatCurrency(top.total)} on ${top.category}, which is ${formatCurrency(top.total - topLimit)} over your ${formatCurrency(topLimit)} monthly budget.`;
+        insightPrompt = `How can I reduce my ${top.category} expenses this month?`;
+      } else {
+        insightTitle = `${top.category.toUpperCase()} IS YOUR LARGEST OUTFLOW`;
+        insightText = `Spending on ${top.category} accounts for ${pct}% of your total outflow this month (${formatCurrency(top.total)} across logged expenses).`;
+        insightPrompt = `Analyze my spending on ${top.category} and suggest ways to optimize it.`;
+      }
+    } else if (insightsData && insightsData.insights && insightsData.insights.length > 0) {
+      const ins = insightsData.insights[0];
+      insightTitle = (ins.title || 'SPENDING PATTERN IDENTIFIED').toUpperCase();
+      insightText = ins.body || ins.text || `Top category spend is ${formatCurrency(ins.value || 0)}.`;
+      insightPrompt = `Tell me more about: ${ins.title}`;
+    } else {
+      insightTitle = 'PROACTIVE SPENDING HABITS';
+      insightText = 'Log your daily expenses in chat or adjust category limits to receive automated insights and habit recommendations.';
+      insightPrompt = 'Help me plan my budget for this month';
     }
 
+    let html = '';
+
+    // 1. Dashboard Header
+    html += `
+      <div class="dashboard-header">
+        <div class="dashboard-header-text">
+          <h1>Dashboard</h1>
+          <p>Personal financial health and monthly expense breakdown</p>
+        </div>
+        <div class="dashboard-period-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+          <span>This Month</span>
+        </div>
+      </div>
+    `;
+
+    // 2. 4 Top Stat Cards
+    html += '<div class="stat-cards-row">';
+
+    // Card 1: This Month's Spending
+    html += `
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-card-label">This Month's Spending</span>
+          <div class="stat-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+              <line x1="1" y1="10" x2="23" y2="10"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-card-value" id="stat-val-spent">${formatCurrency(totalSpent)}</div>
+        <div class="stat-card-sub">
+          <span class="stat-pill neutral">${txnCount} entries</span>
+          <span>across all categories</span>
+        </div>
+      </div>
+    `;
+
+    // Card 2: Budget Remaining
+    const budgetStatusClass = totalBudget <= 0 ? 'neutral' : (totalSpent > totalBudget ? 'danger' : budgetPctLeft < 20 ? 'warning' : 'success');
+    const budgetBadgeText = totalBudget > 0 ? (totalSpent > totalBudget ? 'Over budget' : `${budgetPctLeft}% left`) : 'No budget';
+    html += `
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-card-label">Budget Remaining</span>
+          <div class="stat-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-card-value" id="stat-val-budget">${formatCurrency(budgetRemaining)}</div>
+        <div class="stat-card-sub">
+          <span class="stat-pill ${budgetStatusClass}">${budgetBadgeText}</span>
+          <span>of ${formatCurrency(totalBudget)} total</span>
+        </div>
+      </div>
+    `;
+
+    // Card 3: Savings This Month
+    const savingsSubText = snapshot && snapshot.monthly_income > 0 ? `${savingsRate}% savings rate` : 'Planned monthly allocation';
+    html += `
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-card-label">Savings This Month</span>
+          <div class="stat-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="1" x2="12" y2="23"/>
+              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-card-value" id="stat-val-savings">${formatCurrency(savingsThisMonth)}</div>
+        <div class="stat-card-sub">
+          <span class="stat-pill success">${savingsSubText}</span>
+        </div>
+      </div>
+    `;
+
+    // Card 4: Potential Savings
+    html += `
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-card-label">Potential Savings</span>
+          <div class="stat-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-card-value" id="stat-val-potential">${formatCurrency(potentialSavings)}</div>
+        <div class="stat-card-sub">
+          <span class="stat-pill neutral">${potentialSub}</span>
+        </div>
+      </div>
+    `;
+
+    html += '</div>'; // close stat-cards-row
+
+    // 3. AI Insight Callout Card
+    html += `
+      <div class="insight-callout-card">
+        <div class="insight-callout-left">
+          <div class="insight-pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            AI Financial Insight
+          </div>
+          <div class="insight-callout-title">${escapeHtml(insightTitle)}</div>
+          <div class="insight-callout-body">${escapeHtml(insightText)}</div>
+        </div>
+        <button class="insight-action-btn" id="insight-action-btn" data-prompt="${escapeHtml(insightPrompt)}">
+          Ask ABT
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </button>
+      </div>
+    `;
+
+    // 4. Charts Row: Spending Trend & Category Donut
+    html += '<div class="charts-row">';
+
+    // Left Chart: Spending Trend
+    html += `
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title-wrap">
+            <h3>Spending Trend</h3>
+            <span>Daily expenses over the last 7 days</span>
+          </div>
+        </div>
+        <div class="chart-body">
+          ${renderTrendLineChart(dailySpend.slice(-7))}
+        </div>
+      </div>
+    `;
+
+    // Right Chart: Category Breakdown Donut Chart
+    html += `
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title-wrap">
+            <h3>Category Breakdown</h3>
+            <span>Distribution across budgets</span>
+          </div>
+        </div>
+        <div class="chart-body">
+          ${renderDonutChart(categoryBreakdown, totalSpent)}
+        </div>
+      </div>
+    `;
+
+    html += '</div>'; // close charts-row
+
+    // 5. Recent Transactions Section
+    html += `
+      <div class="dashboard-txn-card">
+        <div class="chart-header" style="margin-bottom: 0;">
+          <div class="chart-title-wrap">
+            <h3>Recent Transactions</h3>
+            <span>Latest activity this month</span>
+          </div>
+        </div>
+        <div class="txn-table-wrap">
+    `;
+
+    if (recentTxns.length > 0) {
+      html += '<table class="txn-table"><thead><tr>';
+      html += '<th>Date</th><th>Category</th><th>Note / Description</th><th style="text-align:right;">Amount</th>';
+      html += '</tr></thead><tbody>';
+      recentTxns.forEach((t) => {
+        html += `<tr>
+          <td class="txn-date">${formatDate(t.date)}</td>
+          <td><span class="txn-category">${escapeHtml(t.category)}</span></td>
+          <td style="color:var(--text-secondary);">${escapeHtml(t.note || 'Expense')}</td>
+          <td class="txn-amount">${formatCurrency(t.amount)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+    } else {
+      html += `
+        <div class="empty-state" style="padding: 36px 0;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:36px;height:36px;opacity:0.25;margin-bottom:8px;">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <line x1="6" y1="12" x2="18" y2="12"/>
+          </svg>
+          <p>No transactions recorded this month. Message ABT in chat to log an expense.</p>
+        </div>
+      `;
+    }
+
+    html += '</div></div>'; // close txn-table-wrap & dashboard-txn-card
+
+    dashboardContent.innerHTML = html;
+    dashboardContent.style.display = '';
+
+    // Animate stat numbers smoothly
+    animateNumber($('#stat-val-spent'), totalSpent, formatCurrency);
+    animateNumber($('#stat-val-budget'), budgetRemaining, formatCurrency);
+    animateNumber($('#stat-val-savings'), savingsThisMonth, formatCurrency);
+    animateNumber($('#stat-val-potential'), potentialSavings, formatCurrency);
+
+    // Wire up AI Insight action button
+    const insightBtn = $('#insight-action-btn');
+    if (insightBtn) {
+      insightBtn.addEventListener('click', () => {
+        const prompt = insightBtn.getAttribute('data-prompt');
+        if (prompt && composerInput) {
+          composerInput.value = prompt;
+          switchView('chat');
+          composerInput.focus();
+        }
+      });
+    }
+  }
+
+  // SVG Donut Chart Renderer
+  function renderDonutChart(data, totalSpent) {
+    if (!data || data.length === 0 || totalSpent <= 0) {
+      return `
+        <div class="empty-state" style="padding: 32px 0;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:36px;height:36px;opacity:0.25;margin-bottom:8px;">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 6v6l4 2"/>
+          </svg>
+          <p>No category spending recorded yet.</p>
+        </div>
+      `;
+    }
+
+    const colors = [
+      '#10B981', '#38BDF8', '#818CF8', '#F59E0B', '#EC4899',
+      '#64748B', '#14B8A6', '#A855F7', '#F97316', '#06B6D4'
+    ];
+
+    const size = 180;
+    const center = size / 2; // 90
+    const radius = 62;
+    const circumference = 2 * Math.PI * radius; // ~389.55
+
+    let currentOffset = 0;
+    let circlesHtml = '';
+    let legendHtml = '<div class="donut-legend">';
+
+    data.forEach((cat, idx) => {
+      const color = colors[idx % colors.length];
+      const pct = (cat.total / totalSpent) * 100;
+      const dashLength = (cat.total / totalSpent) * circumference;
+      const dashSpace = circumference - dashLength;
+
+      circlesHtml += `
+        <circle class="donut-segment"
+          cx="${center}" cy="${center}" r="${radius}"
+          stroke="${color}"
+          stroke-dasharray="${dashLength.toFixed(2)} ${dashSpace.toFixed(2)}"
+          stroke-dashoffset="${(-currentOffset).toFixed(2)}"
+        ><title>${escapeHtml(cat.category)}: ${formatCurrency(cat.total)} (${pct.toFixed(0)}%)</title></circle>
+      `;
+
+      currentOffset += dashLength;
+
+      legendHtml += `
+        <div class="donut-legend-item">
+          <div class="donut-legend-left">
+            <div class="donut-legend-dot" style="background:${color};"></div>
+            <span class="donut-legend-name" title="${escapeHtml(cat.category)}">${escapeHtml(cat.category)}</span>
+          </div>
+          <span class="donut-legend-amount">${pct.toFixed(0)}%</span>
+        </div>
+      `;
+    });
+
+    legendHtml += '</div>';
+
+    return `
+      <div class="donut-chart-wrap">
+        <svg class="donut-svg" viewBox="0 0 ${size} ${size}">
+          <circle class="donut-circle-bg" cx="${center}" cy="${center}" r="${radius}"></circle>
+          ${circlesHtml}
+          <g class="donut-center-group" style="transform: rotate(90deg); transform-origin: ${center}px ${center}px;">
+            <text class="donut-center-label" x="${center}" y="${center - 6}" text-anchor="middle">TOTAL SPENT</text>
+            <text class="donut-center-value" x="${center}" y="${center + 14}" text-anchor="middle">${formatCurrency(totalSpent)}</text>
+          </g>
+        </svg>
+        ${legendHtml}
+      </div>
+    `;
+  }
+
+  // SVG Trend Line Chart Renderer
+  function renderTrendLineChart(data) {
+    if (!data || data.length === 0) {
+      return `
+        <div class="empty-state" style="padding: 32px 0;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:36px;height:36px;opacity:0.25;margin-bottom:8px;">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <p>No daily expense data yet for this period.</p>
+        </div>
+      `;
+    }
+
+    let chartData = data;
+    if (data.length === 1) {
+      const d0 = data[0];
+      chartData = [
+        { date: '', total: 0 },
+        { date: d0.date || d0.day, total: d0.total || d0.amount || 0 }
+      ];
+    }
+
+    const w = 480, h = 180, padL = 40, padR = 16, padT = 20, padB = 30;
+    const chartW = w - padL - padR;
+    const chartH = h - padT - padB;
+
+    const maxVal = Math.max(...chartData.map((d) => d.total || d.amount || 0), 100);
+    const stepX = chartData.length > 1 ? chartW / (chartData.length - 1) : chartW / 2;
+
+    let points = '';
+    let areaPoints = '';
+    let pointsHtml = '';
+
+    chartData.forEach((d, i) => {
+      const val = d.total || d.amount || 0;
+      const x = padL + (data.length > 1 ? i * stepX : chartW / 2);
+      const y = padT + chartH - (val / maxVal) * chartH;
+
+      if (i === 0) {
+        points += `M${x.toFixed(1)},${y.toFixed(1)}`;
+        areaPoints += `M${x.toFixed(1)},${(padT + chartH).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)}`;
+      } else {
+        points += ` L${x.toFixed(1)},${y.toFixed(1)}`;
+        areaPoints += ` L${x.toFixed(1)},${y.toFixed(1)}`;
+      }
+
+      const dateStr = d.date ? formatDate(d.date) : `Day ${i + 1}`;
+      pointsHtml += `
+        <circle class="trend-point" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4">
+          <title>${dateStr}: ${formatCurrency(val)}</title>
+        </circle>
+        <text x="${x.toFixed(1)}" y="${h - 8}" fill="#64748B" font-size="10" text-anchor="middle" font-family="Inter,sans-serif">${dateStr}</text>
+      `;
+    });
+
+    const lastX = padL + (data.length > 1 ? (data.length - 1) * stepX : chartW / 2);
+    areaPoints += ` L${lastX.toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
+
+    // Grid lines
+    let gridHtml = '';
+    for (let i = 0; i <= 3; i++) {
+      const y = padT + (chartH * i) / 3;
+      const gridVal = Math.round(maxVal - (maxVal * i) / 3);
+      gridHtml += `
+        <line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="${padL - 8}" y="${y + 3}" fill="#64748B" font-size="9" text-anchor="end" font-family="Inter,sans-serif">${Math.round(gridVal)}</text>
+      `;
+    }
+
+    return `
+      <svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="trend-area-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#10B981" stop-opacity="0.16" />
+            <stop offset="100%" stop-color="#10B981" stop-opacity="0.0" />
+          </linearGradient>
+        </defs>
+        ${gridHtml}
+        <path d="${areaPoints}" fill="url(#trend-area-grad)" />
+        <path class="chart-trend-line" d="${points}" />
+        ${pointsHtml}
+      </svg>
+    `;
+  }
+
+  // ---------- Udhar ----------
+
+  async function loadUdhar() {
+    udharLoader.style.display = '';
+    udharContent.style.display = 'none';
+
+    try {
+      const data = await api('/api/udhar');
+      renderUdhar(data);
+    } catch (err) {
+      udharContent.innerHTML =
+        '<div class="empty-state"><p>Could not load udhar data.</p></div>';
+      udharContent.style.display = '';
+    } finally {
+      udharLoader.style.display = 'none';
+    }
+  }
+
+  function renderUdhar(data) {
+    const totalLent = data.total_lent || 0;
+    const totalBorrowed = data.total_borrowed || 0;
+    const net = totalLent - totalBorrowed;
+    const people = data.people || [];
+
+    let html = '';
+
+    // Summary cards
+    html += '<div class="udhar-summary-cards">';
+    html += `<div class="udhar-card">
+      <div class="card-label">Total Lent</div>
+      <div class="card-value lent-color">${formatCurrency(totalLent)}</div>
+    </div>`;
+    html += `<div class="udhar-card">
+      <div class="card-label">Total Borrowed</div>
+      <div class="card-value borrowed-color">${formatCurrency(totalBorrowed)}</div>
+    </div>`;
+    html += `<div class="udhar-card">
+      <div class="card-label">Net Position</div>
+      <div class="card-value net-color">${formatCurrency(net)}</div>
+    </div>`;
+    html += '</div>';
+
+    // People list
+    if (people.length > 0) {
+      html += '<div class="udhar-people-list">';
+      people.forEach((p) => {
+        const isLent = p.kind === 'lent';
+        const colorClass = isLent ? 'lent-color' : 'borrowed-color';
+        const label = isLent ? 'You lent' : 'You borrowed';
+        html += `<div class="udhar-person">
+          <div class="udhar-person-info">
+            <span class="udhar-person-name">${escapeHtml(p.person_name)}</span>
+            <span class="udhar-person-detail">${label}${p.note ? ' - ' + escapeHtml(p.note) : ''}</span>
+          </div>
+          <span class="udhar-person-amount ${colorClass}">${formatCurrency(p.net_amount || p.amount)}</span>
+        </div>`;
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="empty-state"><p>No udhar entries yet. Tell ABT about money you lent or borrowed.</p></div>';
+    }
+
+    udharContent.innerHTML = html;
+    udharContent.style.display = '';
+  }
+
+  // ---------- Insights ----------
+
+  async function loadInsights() {
+    insightsLoader.style.display = '';
+    insightsContent.style.display = 'none';
+
+    try {
+      const [insightsData, recapData] = await Promise.all([
+        api('/api/insights').catch(() => ({ insights: [] })),
+        api('/api/recap').catch(() => null),
+      ]);
+
+      renderInsights(insightsData.insights || [], recapData);
+    } catch (err) {
+      insightsContent.innerHTML =
+        '<div class="empty-state"><p>Could not load insights.</p></div>';
+      insightsContent.style.display = '';
+    } finally {
+      insightsLoader.style.display = 'none';
+    }
+  }
+
+  function renderInsights(insights, recap) {
+    let html = '';
+
+    // Weekly recap card
+    if (recap) {
+      let topCat = '--';
+      if (recap.top_category) {
+        if (typeof recap.top_category === 'string') {
+          topCat = recap.top_category;
+        } else if (recap.top_category.category) {
+          const catName = recap.top_category.category.charAt(0).toUpperCase() + recap.top_category.category.slice(1);
+          topCat = recap.top_category.total ? `${catName} (${formatCurrency(recap.top_category.total)})` : catName;
+        }
+      }
+      html += '<div class="recap-card"><h3>Weekly Recap</h3>';
+      html += '<div class="recap-stats">';
+      html += recapStatHTML('Spent (7d)', formatCurrency(recap.total_spent));
+      html += recapStatHTML('Income (7d)', formatCurrency(recap.week_income));
+      html += recapStatHTML('Top Category', topCat);
+      html += recapStatHTML('Streak', (recap.logging_streak || 0) + ' days');
+      html += '</div>';
+      if (recap.narration) {
+        html += `<p class="recap-narration" style="margin-top: 14px; font-size: var(--font-size-sm); color: var(--text-secondary); line-height: 1.5;">${escapeHtml(recap.narration)}</p>`;
+      }
+      html += '</div>';
+    }
+
+    // Insight cards
+    if (insights.length > 0) {
+      html += '<div class="insight-cards">';
+      insights.forEach((ins) => {
+        html += `<div class="insight-card">
+          <div class="insight-title">${escapeHtml(ins.title || 'Insight')}</div>
+          <div class="insight-body">${escapeHtml(ins.body || ins.text || '')}</div>
+        </div>`;
+      });
+      html += '</div>';
+    } else if (!recap) {
+      html += '<div class="empty-state"><p>Not enough data for insights yet. Keep logging your expenses.</p></div>';
+    }
+
+    insightsContent.innerHTML = html;
+    insightsContent.style.display = '';
+  }
+
+  function recapStatHTML(label, value) {
+    return `<div class="recap-stat">
+      <label>${escapeHtml(label)}</label>
+      <span class="value">${escapeHtml(String(value))}</span>
+    </div>`;
+  }
+
+  // ---------- Onboarding Wizard ----------
+
+  const ONBOARDING_CATEGORIES = [
+    { key: 'rent', label: 'Rent', group: 'needs' },
+    { key: 'groceries', label: 'Groceries / daily needs', group: 'needs' },
+    { key: 'eating out', label: 'Eating out / food delivery', group: 'wants' },
+    { key: 'travel', label: 'Travel / commute', group: 'wants' },
+    { key: 'utilities', label: 'Utilities (bills, wifi, recharge)', group: 'needs' },
+    { key: 'personal care', label: 'Personal care', group: 'wants' },
+    { key: 'entertainment', label: 'Entertainment / subscriptions', group: 'wants' },
+    { key: 'shopping', label: 'Shopping', group: 'wants' },
+    { key: 'health', label: 'Health / medical', group: 'needs' },
+    { key: 'emergency fund', label: 'Emergency fund (savings)', group: 'savings' },
+    { key: 'sip / investments', label: 'SIP / investments (savings)', group: 'savings' },
+    { key: 'miscellaneous', label: 'Miscellaneous', group: 'wants' },
+  ];
+
+  function showOnboarding(startStep = 1) {
+    authScreen.style.display = 'none';
+    appScreen.classList.remove('active');
+    onboardingScreen.style.display = 'flex';
+
+    // Match radio selection with current living situation
+    const currentRadio = $(`input[name="living"][value="${obLiving}"]`);
+    if (currentRadio) {
+      currentRadio.checked = true;
+    } else {
+      const defaultRadio = $('input[name="living"][value="alone"]');
+      if (defaultRadio) {
+        defaultRadio.checked = true;
+        obLiving = 'alone';
+      }
+    }
+
+    goToStep(startStep);
+  }
+
+  function hideOnboarding() {
+    onboardingScreen.style.display = 'none';
+  }
+
+  async function goToStep(step) {
+    currentObStep = step;
+
+    // Progress label
+    if (obStepLabel) obStepLabel.textContent = `Step ${step} of 4`;
+
+    // Progress step circles
+    $$('.progress-step').forEach((el) => {
+      const s = parseInt(el.getAttribute('data-step'), 10);
+      el.classList.remove('active', 'completed');
+      if (s === step) el.classList.add('active');
+      else if (s < step) el.classList.add('completed');
+    });
+
+    // Progress lines
+    $$('.progress-line').forEach((el, idx) => {
+      if (idx + 1 < step) el.classList.add('completed');
+      else el.classList.remove('completed');
+    });
+
+    // Step views
+    $$('.onboarding-step').forEach((el) => el.classList.remove('active'));
+    const activeStepEl = $(`#ob-step-${step}`);
+    if (activeStepEl) activeStepEl.classList.add('active');
+
+    // Navigation buttons state
+    if (obBackBtn) obBackBtn.style.visibility = step === 1 ? 'hidden' : 'visible';
+    if (obNextBtn) {
+      obNextBtn.textContent = step === 4 ? 'Save my budgets' : 'Next';
+      obNextBtn.disabled = false;
+    }
+
+    if (step === 3) {
+      await loadCategoryDefaults();
+    } else if (step === 4) {
+      renderReviewStep();
+    }
+  }
+
+  async function loadCategoryDefaults() {
+    if (obDefaultsFetched && obLastFetchedSituation === obLiving && obLastFetchedIncome === obIncome) {
+      return;
+    }
+
+    try {
+      let url = `/api/onboarding/defaults?living_situation=${encodeURIComponent(obLiving || 'alone')}`;
+      if (obIncome && obIncome > 0) {
+        url += `&income=${encodeURIComponent(obIncome)}`;
+      }
+      const data = await api(url);
+      const defaults = data.defaults || {};
+
+      obDefaultsFetched = true;
+      obLastFetchedSituation = obLiving;
+      obLastFetchedIncome = obIncome;
+
+      ONBOARDING_CATEGORIES.forEach((cat) => {
+        const isFamilyRent = (obLiving === 'family' && cat.key === 'rent');
+        const defaultAmount = defaults[cat.key] != null ? defaults[cat.key] : 0;
+        const existing = obCategoryState[cat.key];
+        obCategoryState[cat.key] = {
+          enabled: isFamilyRent ? false : (existing != null ? existing.enabled : true),
+          amount: existing != null ? existing.amount : defaultAmount,
+        };
+      });
+
+      renderCategoriesList();
+    } catch (err) {
+      console.error('Failed to load defaults:', err);
+      showToast('Failed to load suggested budgets', 'error');
+    }
+  }
+
+  function renderCategoriesList() {
+    let html = '';
+    ONBOARDING_CATEGORIES.forEach((cat) => {
+      const isFamilyRent = (obLiving === 'family' && cat.key === 'rent');
+      const st = obCategoryState[cat.key] || { enabled: true, amount: 0 };
+      html += `
+        <div class="ob-cat-row ${st.enabled ? '' : 'disabled'}" data-key="${escapeHtml(cat.key)}" style="${isFamilyRent ? 'display:none;' : ''}">
+          <div class="ob-cat-left">
+            <label class="ob-switch">
+              <input type="checkbox" class="ob-cat-toggle" data-key="${escapeHtml(cat.key)}" ${st.enabled ? 'checked' : ''}>
+              <span class="ob-slider"></span>
+            </label>
+            <span class="ob-cat-name">${escapeHtml(cat.label)}</span>
+          </div>
+          <div class="ob-cat-right">
+            <div class="ob-cat-input-wrap">
+              <span>Rs</span>
+              <input type="number" class="ob-cat-input" data-key="${escapeHtml(cat.key)}" value="${st.amount}" min="0" step="100">
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    obCategoriesContainer.innerHTML = html;
+
+    obCategoriesContainer.querySelectorAll('.ob-cat-toggle').forEach((toggle) => {
+      toggle.addEventListener('change', (e) => {
+        const key = e.target.getAttribute('data-key');
+        const row = e.target.closest('.ob-cat-row');
+        if (obCategoryState[key]) {
+          obCategoryState[key].enabled = e.target.checked;
+        }
+        if (row) {
+          row.classList.toggle('disabled', !e.target.checked);
+        }
+        updateTotalBar();
+      });
+    });
+
+    obCategoriesContainer.querySelectorAll('.ob-cat-input').forEach((input) => {
+      input.addEventListener('input', (e) => {
+        const key = e.target.getAttribute('data-key');
+        const val = parseFloat(e.target.value);
+        if (obCategoryState[key]) {
+          obCategoryState[key].amount = (!isNaN(val) && val >= 0) ? val : 0;
+        }
+        updateTotalBar();
+      });
+    });
+
+    updateTotalBar();
+  }
+
+  function updateTotalBar() {
+    let total = 0;
+    let savingsTotal = 0;
+    ONBOARDING_CATEGORIES.forEach((cat) => {
+      const isFamilyRent = (obLiving === 'family' && cat.key === 'rent');
+      if (isFamilyRent) return;
+      const st = obCategoryState[cat.key];
+      if (st && st.enabled) {
+        total += st.amount;
+        if (cat.group === 'savings') {
+          savingsTotal += st.amount;
+        }
+      }
+    });
+
+    obTotalAmount.textContent = formatCurrency(total);
+
+    if (obIncome && obIncome > 0) {
+      const leftover = obIncome - total;
+      const savingsRate = Math.round((savingsTotal / obIncome) * 100);
+      if (leftover >= 0) {
+        obRemaining.className = 'ob-remaining surplus';
+        obRemaining.textContent = `Leftover: ${formatCurrency(leftover)} (${savingsRate}% savings)`;
+      } else {
+        obRemaining.className = 'ob-remaining deficit';
+        obRemaining.textContent = `Over budget by ${formatCurrency(Math.abs(leftover))}`;
+      }
+    } else {
+      const activeCount = Object.values(obCategoryState).filter((s) => s.enabled).length;
+      obRemaining.className = 'ob-remaining neutral';
+      obRemaining.textContent = `${activeCount} categories active`;
+    }
+  }
+
+  function renderReviewStep() {
+    let total = 0;
+    let needsTotal = 0;
+    let wantsTotal = 0;
+    let savingsTotal = 0;
+    let listHtml = '';
+
+    ONBOARDING_CATEGORIES.forEach((cat) => {
+      const isFamilyRent = (obLiving === 'family' && cat.key === 'rent');
+      if (isFamilyRent) return;
+      const st = obCategoryState[cat.key];
+      if (st && st.enabled && st.amount > 0) {
+        total += st.amount;
+        if (cat.group === 'needs') needsTotal += st.amount;
+        else if (cat.group === 'wants') wantsTotal += st.amount;
+        else if (cat.group === 'savings') savingsTotal += st.amount;
+
+        listHtml += `
+          <div class="ob-review-row">
+            <span class="name">${escapeHtml(cat.label)}</span>
+            <span class="val">${formatCurrency(st.amount)}</span>
+          </div>
+        `;
+      }
+    });
+
+    if (!listHtml) {
+      listHtml = '<div style="padding: 12px; color: var(--text-tertiary); text-align: center;">No categories enabled.</div>';
+    }
+    obReviewList.innerHTML = listHtml;
+
+    let summaryHtml = `
+      <div class="ob-summary-metric">
+        <span class="label">Total Monthly Budget</span>
+        <span class="val">${formatCurrency(total)}</span>
+      </div>
+    `;
+
+    if (obIncome && obIncome > 0) {
+      const leftover = obIncome - total;
+      const savingsRate = Math.round((savingsTotal / obIncome) * 100);
+      summaryHtml += `
+        <div class="ob-summary-metric">
+          <span class="label">Monthly Income</span>
+          <span class="val">${formatCurrency(obIncome)}</span>
+        </div>
+        <div class="ob-summary-metric">
+          <span class="label">Implied Savings Rate</span>
+          <span class="val" style="color: ${savingsRate >= 20 ? 'var(--success)' : 'var(--text-primary)'};">${savingsRate}%</span>
+        </div>
+        <div class="ob-summary-metric">
+          <span class="label">Leftover / Surplus</span>
+          <span class="val" style="color: ${leftover >= 0 ? 'var(--success)' : 'var(--danger)'};">${formatCurrency(leftover)}</span>
+        </div>
+      `;
+    }
+
+    summaryHtml += `
+      <div class="ob-summary-divider"></div>
+      <div class="ob-summary-breakdown">
+        <div class="ob-breakdown-box">
+          <div class="box-label">Needs</div>
+          <div class="box-val">${formatCurrency(needsTotal)}</div>
+        </div>
+        <div class="ob-breakdown-box">
+          <div class="box-label">Wants</div>
+          <div class="box-val">${formatCurrency(wantsTotal)}</div>
+        </div>
+        <div class="ob-breakdown-box">
+          <div class="box-label">Savings</div>
+          <div class="box-val">${formatCurrency(savingsTotal)}</div>
+        </div>
+      </div>
+    `;
+
+    obReviewSummary.innerHTML = summaryHtml;
+  }
+
+  async function saveOnboardingBudgets() {
+    obNextBtn.disabled = true;
+    obNextBtn.textContent = 'Saving...';
+    try {
+      const categoriesPayload = ONBOARDING_CATEGORIES.map((cat) => {
+        const isFamilyRent = (obLiving === 'family' && cat.key === 'rent');
+        const st = obCategoryState[cat.key] || { enabled: false, amount: 0 };
+        return {
+          name: cat.key,
+          amount: isFamilyRent ? 0 : st.amount,
+          enabled: isFamilyRent ? false : (st.enabled && st.amount > 0),
+        };
+      });
+
+      await api('/api/onboarding/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          living_situation: obLiving || 'alone',
+          monthly_income: obIncome || null,
+          categories: categoriesPayload,
+        }),
+      });
+
+      sessionStorage.removeItem('abt_onboarding_skipped');
+      showToast('Budgets saved successfully! Welcome to ABT.', 'success');
+      showApp();
+    } catch (err) {
+      showToast(err.message || 'Failed to save budgets', 'error');
+    } finally {
+      obNextBtn.disabled = false;
+      obNextBtn.textContent = 'Save my budgets';
+    }
+  }
+
+  // Onboarding listeners
+  if (obNextBtn) {
+    obNextBtn.addEventListener('click', async () => {
+      if (currentObStep === 1) {
+        const sel = $('input[name="living"]:checked');
+        if (!sel) {
+          showToast('Please select your living situation', 'error');
+          return;
+        }
+        obLiving = sel.value;
+        goToStep(2);
+      } else if (currentObStep === 2) {
+        const val = parseFloat(obIncomeInput.value);
+        obIncome = (!isNaN(val) && val > 0) ? val : null;
+        goToStep(3);
+      } else if (currentObStep === 3) {
+        goToStep(4);
+      } else if (currentObStep === 4) {
+        await saveOnboardingBudgets();
+      }
+    });
+  }
+
+  if (obBackBtn) {
+    obBackBtn.addEventListener('click', () => {
+      if (currentObStep > 1) {
+        goToStep(currentObStep - 1);
+      }
+    });
+  }
+
+  if (obSkipBtn) {
+    obSkipBtn.addEventListener('click', () => {
+      sessionStorage.setItem('abt_onboarding_skipped', '1');
+      showApp();
+    });
+  }
+
+  if (redoOnboardingBtn) {
+    redoOnboardingBtn.addEventListener('click', () => {
+      closeSidebar();
+      sessionStorage.removeItem('abt_onboarding_skipped');
+      showOnboarding(1);
+    });
+  }
+
+  $$('input[name="living"]').forEach((radio) => {
+    radio.addEventListener('change', (e) => {
+      obLiving = e.target.value;
+      if (obLastFetchedSituation !== obLiving) {
+        obDefaultsFetched = false;
+      }
+    });
+  });
+
+  if (obIncomeInput) {
+    obIncomeInput.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      obIncome = (!isNaN(val) && val > 0) ? val : null;
+      if (obLastFetchedIncome !== obIncome) {
+        obDefaultsFetched = false;
+      }
+    });
+  }
+
+  // ---------- PWA Service Worker ----------
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  // ---------- Init ----------
+
+  tryRestore();
 })();

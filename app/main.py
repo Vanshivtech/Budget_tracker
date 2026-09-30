@@ -25,6 +25,7 @@ from app.db import (
     get_financial_snapshot, get_insights, get_weekly_recap,
     get_logging_streak, add_income_entry, get_income_summary,
     get_user_profile, update_user_profile,
+    suggest_budget_defaults, has_completed_onboarding, complete_onboarding,
 )
 from app.auth import hash_password, verify_password, create_access_token, get_current_user
 from app.agent import handle_user_message
@@ -112,6 +113,18 @@ class IncomeRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     current_savings: float | None = None
     risk_comfort: str | None = None
+
+
+class OnboardingCategoryItem(BaseModel):
+    name: str
+    amount: float
+    enabled: bool
+
+
+class OnboardingCompleteRequest(BaseModel):
+    living_situation: str
+    monthly_income: float | None = None
+    categories: list[OnboardingCategoryItem]
 
 
 # ---------- Auth Routes ----------
@@ -333,6 +346,50 @@ def profile_update(req: ProfileUpdateRequest, user: dict = Depends(get_current_u
         current_savings=req.current_savings,
         risk_comfort=req.risk_comfort,
     )
+
+
+# ---------- Onboarding ----------
+
+@app.get("/api/onboarding/status")
+def onboarding_status(user: dict = Depends(get_current_user)):
+    """Check if the user needs onboarding (has no budgets set)."""
+    done = has_completed_onboarding(user["id"])
+    return {"completed": done}
+
+
+@app.get("/api/onboarding/defaults")
+def onboarding_defaults(
+    income: float | None = None,
+    living_situation: str = "alone",
+):
+    """Deterministic budget suggestions. No auth needed, no LLM call."""
+    valid_situations = ("family", "alone", "pg", "roommates")
+    if living_situation not in valid_situations:
+        living_situation = "alone"
+    defaults = suggest_budget_defaults(
+        monthly_income=income,
+        living_situation=living_situation,
+    )
+    return {"defaults": defaults, "income": income, "living_situation": living_situation}
+
+
+@app.post("/api/onboarding/complete")
+def onboarding_complete(
+    req: OnboardingCompleteRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Save onboarding budgets. Pure DB writes, zero LLM tokens."""
+    valid_situations = ("family", "alone", "pg", "roommates")
+    sit = req.living_situation.lower().strip()
+    if sit not in valid_situations:
+        raise HTTPException(status_code=400, detail="Invalid living_situation")
+    result = complete_onboarding(
+        user_id=user["id"],
+        living_situation=sit,
+        monthly_income=req.monthly_income,
+        categories=[c.model_dump() for c in req.categories],
+    )
+    return result
 
 
 @app.get("/api/health")

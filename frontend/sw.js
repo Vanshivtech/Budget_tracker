@@ -1,56 +1,65 @@
-/* ABT — AI Budget Tracker Service Worker v4 */
-const CACHE_NAME = "abt-v4";
-
-const PRECACHE = [
-    "/",
-    "/static/styles.css?v=4",
-    "/static/app.js?v=4",
-    "/static/favicon.png",
-    "/static/favicon.svg",
-    "/static/icon-192.png",
-    "/static/icon-512.png",
-    "/static/Logo_ABT.png",
-    "/manifest.json",
+/* ABT Service Worker — app-shell caching */
+const CACHE_NAME = 'abt-v7';
+const SHELL_ASSETS = [
+  '/',
+  '/static/styles.css',
+  '/static/app.js',
+  '/static/Logo_ABT.png',
+  '/static/favicon.png',
+  '/static/icon-192.png',
+  '/static/icon-512.png',
+  '/manifest.json',
 ];
 
-self.addEventListener("install", event => {
-    event.waitUntil(
-        caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE))
-    );
-    self.skipWaiting();
+self.addEventListener('install', (e) => {
+  e.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS))
+  );
+  self.skipWaiting();
 });
 
-self.addEventListener("activate", event => {
-    event.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(
-                keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
-            )
-        )
-    );
-    self.clients.claim();
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
 });
 
-self.addEventListener("fetch", event => {
-    const { request } = event;
-    const url = new URL(request.url);
+self.addEventListener('fetch', (e) => {
+  const url = new URL(e.request.url);
 
-    // Never cache API calls
-    if (url.pathname.startsWith("/api/")) {
-        event.respondWith(fetch(request));
-        return;
-    }
+  // API calls: network only (never cache)
+  if (url.pathname.startsWith('/api/')) return;
 
-    // Network-first for HTML
-    if (request.mode === "navigate") {
-        event.respondWith(
-            fetch(request).catch(() => caches.match("/"))
-        );
-        return;
-    }
-
-    // Cache-first for static assets
-    event.respondWith(
-        caches.match(request).then(cached => cached || fetch(request))
+  // Static images and fonts: cache first
+  if (url.pathname.match(/\.(png|svg|ico|jpg|woff2?)$/)) {
+    e.respondWith(
+      caches.match(e.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(e.request).then((resp) => {
+          if (resp.ok && e.request.method === 'GET') {
+            const clone = resp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone));
+          }
+          return resp;
+        });
+      })
     );
+    return;
+  }
+
+  // App shell (HTML, CSS, JS): Network first, cache fallback
+  e.respondWith(
+    fetch(e.request)
+      .then((resp) => {
+        if (resp.ok && e.request.method === 'GET') {
+          const clone = resp.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone));
+        }
+        return resp;
+      })
+      .catch(() => caches.match(e.request))
+  );
 });

@@ -1228,3 +1228,169 @@ def get_insights(user_id: int) -> list[dict]:
         })
 
     return insights
+
+
+# ---------- Onboarding ----------
+
+# Default flat amounts (used when income is unknown/skipped).
+# Tuned for a ~15k-25k/month earner in urban India.
+_FLAT_DEFAULTS: dict[str, float] = {
+    "rent": 8000,
+    "groceries": 3000,
+    "eating out": 1500,
+    "travel": 1000,
+    "utilities": 1500,
+    "personal care": 500,
+    "entertainment": 500,
+    "shopping": 1000,
+    "health": 500,
+    "emergency fund": 1000,
+    "sip / investments": 1000,
+    "miscellaneous": 500,
+}
+
+# Percentage allocations by living situation (used when income IS known).
+_PCT_WITH_RENT: dict[str, float] = {
+    "rent": 0.30,
+    "groceries": 0.10,
+    "eating out": 0.06,
+    "travel": 0.05,
+    "utilities": 0.05,
+    "personal care": 0.03,
+    "entertainment": 0.03,
+    "shopping": 0.05,
+    "health": 0.03,
+    "emergency fund": 0.10,
+    "sip / investments": 0.10,
+    "miscellaneous": 0.05,
+}
+
+_LIVING_RENT_MULT: dict[str, float] = {
+    "family": 0.0,      # no rent
+    "alone": 1.0,        # full rent (~30%)
+    "pg": 0.50,          # PG/hostel (~15%)
+    "roommates": 0.55,   # shared (~16.5%)
+}
+
+
+def suggest_budget_defaults(
+    monthly_income: float | None,
+    living_situation: str,
+) -> dict[str, float]:
+    """Pure deterministic budget suggestions. No LLM call.
+
+    Args:
+        monthly_income: user's monthly income, or None if skipped.
+        living_situation: one of 'family', 'alone', 'pg', 'roommates'.
+
+    Returns:
+        dict mapping category name -> suggested monthly amount (rounded).
+    """
+    sit = living_situation.lower().strip() if living_situation else "alone"
+    rent_mult = _LIVING_RENT_MULT.get(sit, 1.0)
+
+    if monthly_income and monthly_income > 0:
+        # Income-based percentages
+        result: dict[str, float] = {}
+        for cat, pct in _PCT_WITH_RENT.items():
+            if cat == "rent":
+                amount = monthly_income * pct * rent_mult
+            else:
+                # When rent is saved (family), redistribute ~5% extra to
+                # savings and groceries proportionally.
+                if rent_mult == 0.0 and cat in ("groceries", "sip / investments", "emergency fund"):
+                    amount = monthly_income * (pct + 0.04)
+                else:
+                    amount = monthly_income * pct
+            result[cat] = round(amount / 100) * 100  # round to nearest 100
+        return result
+    else:
+        # Flat defaults
+        result = dict(_FLAT_DEFAULTS)
+        if rent_mult == 0.0:
+            result["rent"] = 0
+        elif sit == "pg":
+            result["rent"] = 5000
+        elif sit == "roommates":
+            result["rent"] = 6000
+        return result
+
+
+def has_completed_onboarding(user_id: int) -> bool:
+    """Check if user has any budgets set (proxy for onboarding completion)."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM budgets WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row["cnt"] > 0
+
+
+def complete_onboarding(
+    user_id: int,
+    living_situation: str,
+    monthly_income: float | None,
+    categories: list[dict],
+) -> dict:
+    """Save onboarding results: upsert budgets for enabled categories,
+    optionally store income entry and living_situation on user_profile.
+
+    categories: list of {name: str, amount: float, enabled: bool}
+    """
+    saved_count = 0
+    with get_db_cursor() as cur:
+        # Upsert each enabled budget category
+        for cat in categories:
+            if not cat.get("enabled"):
+                continue
+            name = cat["name"].lower().strip()
+            amount = float(cat["amount"])
+            if amount <= 0:
+                continue
+            cur.execute(
+                """
+                INSERT INTO budgets (user_id, category, monthly_limit)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, category)
+                DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
+                """,
+                (user_id, name, amount),
+            )
+            saved_count += 1
+
+        # Store living_situation on user_profile
+        # Add columns if they don't exist (safe for ALTER IF NOT EXISTS)
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'user_profile' AND column_name = 'living_situation'
+                ) THEN
+                    ALTER TABLE user_profile ADD COLUMN living_situation VARCHAR(50);
+                END IF;
+            END $$;
+        """)
+
+        cur.execute(
+            """
+            INSERT INTO user_profile (user_id, living_situation, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET living_situation = EXCLUDED.living_situation,
+                updated_at = NOW()
+            """,
+            (user_id, living_situation),
+        )
+
+    # Store monthly income as an income entry if provided
+    if monthly_income and monthly_income > 0:
+        add_income_entry(
+            user_id=user_id,
+            amount=monthly_income,
+            source="salary",
+            entry_date=None,
+        )
+
+    return {"saved_categories": saved_count, "status": "ok"}
