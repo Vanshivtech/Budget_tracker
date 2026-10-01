@@ -11,3 +11,4 @@ langgraph == 0.2.20
 langchain-groq
 openpyxl
 reportlab
+pywebpush

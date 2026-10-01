@@ -16,8 +16,10 @@ Tables:
 All queries are strictly scoped by user_id. Connection pooling via psycopg2.
 """
 from datetime import datetime, date, timedelta
+from typing import Optional, List, Dict, Any, Tuple
 import calendar
 import io
+import time
 from contextlib import contextmanager
 
 from openpyxl import Workbook
@@ -186,6 +188,120 @@ def init_db() -> None:
 
             ALTER TABLE udhar_entries ADD COLUMN IF NOT EXISTS is_split BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE udhar_entries ADD COLUMN IF NOT EXISTS transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL;
+
+            -- Tier 2: Username, avatar, merchant, categories, tags, undo
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(50);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_id INTEGER NOT NULL DEFAULT 1;
+
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant VARCHAR(255);
+
+            CREATE TABLE IF NOT EXISTS user_categories (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name       VARCHAR(100) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_user_categories_unique
+                ON user_categories(user_id, LOWER(name));
+
+            CREATE TABLE IF NOT EXISTS transaction_tags (
+                id             SERIAL PRIMARY KEY,
+                transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+                user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tag            VARCHAR(100) NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_tags_unique
+                ON transaction_tags(transaction_id, LOWER(tag));
+            CREATE INDEX IF NOT EXISTS idx_tx_tags_user ON transaction_tags(user_id, tag);
+
+            CREATE TABLE IF NOT EXISTS merchant_aliases (
+                id              SERIAL PRIMARY KEY,
+                user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                raw_input       VARCHAR(500) NOT NULL,
+                normalized_name VARCHAR(255) NOT NULL,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_merchant_alias_unique
+                ON merchant_aliases(user_id, LOWER(raw_input));
+
+            CREATE TABLE IF NOT EXISTS undo_log (
+                id             SERIAL PRIMARY KEY,
+                user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                action_type    VARCHAR(20) NOT NULL,
+                entity_type    VARCHAR(50) NOT NULL,
+                entity_id      INTEGER,
+                previous_state JSONB,
+                created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_undo_user ON undo_log(user_id, created_at DESC);
+
+            -- Tier 3: Receipts, Merchant Category Cache, Web Push Subscriptions, Notification Logs
+            CREATE TABLE IF NOT EXISTS receipts (
+                id             SERIAL PRIMARY KEY,
+                user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+                path           VARCHAR(500) NOT NULL,
+                mime           VARCHAR(50) NOT NULL,
+                size           INTEGER NOT NULL,
+                created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_receipts_user ON receipts(user_id);
+            CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts(transaction_id);
+
+            CREATE TABLE IF NOT EXISTS merchant_category_cache (
+                normalized_merchant VARCHAR(255) PRIMARY KEY,
+                category            VARCHAR(100) NOT NULL,
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id          SERIAL PRIMARY KEY,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                endpoint    TEXT NOT NULL UNIQUE,
+                p256dh      TEXT NOT NULL,
+                auth        TEXT NOT NULL,
+                preferences JSONB NOT NULL DEFAULT '{"budget_alerts": true, "bill_reminders": true, "weekly_recap": true}',
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_sub_user ON push_subscriptions(user_id);
+
+            CREATE TABLE IF NOT EXISTS sent_notifications (
+                id                SERIAL PRIMARY KEY,
+                user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                notification_type VARCHAR(100) NOT NULL,
+                cycle             VARCHAR(50) NOT NULL,
+                sent_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_sent_notification UNIQUE (user_id, notification_type, cycle)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sent_notif_user ON sent_notifications(user_id, cycle);
+
+            -- Admin & Account Management
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_reset BOOLEAN NOT NULL DEFAULT FALSE;
+
+            CREATE TABLE IF NOT EXISTS errors (
+                id         SERIAL PRIMARY KEY,
+                route      VARCHAR(500) NOT NULL,
+                message    TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_errors_created ON errors(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key        VARCHAR(100) PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            INSERT INTO app_settings (key, value)
+            VALUES
+                ('daily_message_cap', '100'),
+                ('maintenance_mode', 'false'),
+                ('push_notifications_enabled', 'true'),
+                ('csv_import_enabled', 'true'),
+                ('receipt_upload_enabled', 'true')
+            ON CONFLICT (key) DO NOTHING;
         """)
 
 
@@ -239,18 +355,30 @@ def log_transaction(
     category: str,
     note: str = "",
     raw_message: str = "",
+    merchant: str | None = None,
+    entry_date: str | None = None,
 ) -> dict:
     """Insert a new transaction scoped to user_id."""
     cat = category.lower().strip()
     with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO transactions (user_id, amount, category, note, raw_message)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id, user_id, date, amount, category, note
-            """,
-            (user_id, amount, cat, note.strip(), raw_message),
-        )
+        if entry_date:
+            cur.execute(
+                """
+                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant, date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::timestamptz)
+                RETURNING id, user_id, date, amount, category, note, merchant
+                """,
+                (user_id, amount, cat, note.strip(), raw_message, merchant, entry_date),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, user_id, date, amount, category, note, merchant
+                """,
+                (user_id, amount, cat, note.strip(), raw_message, merchant),
+            )
         row = cur.fetchone()
         date_str = (
             row["date"].isoformat()
@@ -264,6 +392,7 @@ def log_transaction(
             "amount": float(row["amount"]),
             "category": row["category"],
             "note": row["note"],
+            "merchant": row.get("merchant"),
         }
 
 
@@ -311,6 +440,9 @@ def update_expense(
     amount: float | None = None,
     category: str | None = None,
     note: str | None = None,
+    entry_date: str | None = None,
+    merchant: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict | None:
     """Update specific fields of an existing transaction owned by user_id."""
     with get_db_cursor() as cur:
@@ -327,36 +459,95 @@ def update_expense(
             category.lower().strip() if category is not None else existing["category"]
         )
         new_note = note.strip() if note is not None else existing["note"]
+        new_date = entry_date if entry_date is not None else existing["date"]
+        new_merchant = merchant.strip() if merchant is not None else existing.get("merchant")
 
         cur.execute(
             """
             UPDATE transactions
-            SET amount = %s, category = %s, note = %s
+            SET amount = %s, category = %s, note = %s, date = %s::timestamptz, merchant = %s
             WHERE id = %s AND user_id = %s
             RETURNING *
             """,
-            (new_amount, new_category, new_note, transaction_id, user_id),
+            (new_amount, new_category, new_note, new_date, new_merchant, transaction_id, user_id),
         )
         updated = cur.fetchone()
         if not updated:
             return None
+
+        if tags is not None:
+            cur.execute("DELETE FROM transaction_tags WHERE transaction_id = %s", (transaction_id,))
+            for t in tags:
+                clean_tag = t.strip().lstrip("#").lower()
+                if clean_tag:
+                    cur.execute(
+                        "INSERT INTO transaction_tags (transaction_id, user_id, tag) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                        (transaction_id, user_id, clean_tag),
+                    )
 
         d = dict(updated)
         if hasattr(d.get("date"), "isoformat"):
             d["date"] = d["date"].isoformat()
         if "amount" in d and d["amount"] is not None:
             d["amount"] = float(d["amount"])
+        cur.execute(
+            "SELECT tag FROM transaction_tags WHERE user_id = %s AND transaction_id = %s ORDER BY tag",
+            (user_id, transaction_id),
+        )
+        d["tags"] = [r["tag"] for r in cur.fetchall()]
         return d
 
 
 def delete_expense(user_id: int, transaction_id: int) -> bool:
-    """Delete a transaction owned by user_id. Returns True if deleted."""
+    """Delete a transaction owned by user_id and its attached receipt files. Returns True if deleted."""
+    from app.storage import delete_from_storage
     with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT path FROM receipts WHERE transaction_id = %s AND user_id = %s",
+            (transaction_id, user_id),
+        )
+        receipt_paths = [r["path"] for r in cur.fetchall()]
         cur.execute(
             "DELETE FROM transactions WHERE id = %s AND user_id = %s",
             (transaction_id, user_id),
         )
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+
+    if deleted and receipt_paths:
+        for p in receipt_paths:
+            try:
+                delete_from_storage(p)
+            except Exception:
+                pass
+
+    return deleted
+
+
+def bulk_delete_expenses(user_id: int, transaction_ids: list[int]) -> int:
+    """Bulk delete transactions owned by user_id and attached receipt files."""
+    if not transaction_ids:
+        return 0
+    from app.storage import delete_from_storage
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT path FROM receipts WHERE user_id = %s AND transaction_id = ANY(%s)",
+            (user_id, transaction_ids),
+        )
+        receipt_paths = [r["path"] for r in cur.fetchall()]
+        cur.execute(
+            "DELETE FROM transactions WHERE user_id = %s AND id = ANY(%s)",
+            (user_id, transaction_ids),
+        )
+        deleted_count = cur.rowcount
+
+    if deleted_count > 0 and receipt_paths:
+        for p in receipt_paths:
+            try:
+                delete_from_storage(p)
+            except Exception:
+                pass
+
+    return deleted_count
 
 
 def spend_by_category(user_id: int, month: str) -> dict[str, float]:
@@ -429,18 +620,85 @@ def get_budgets(user_id: int) -> dict[str, float]:
         return {row["category"]: float(row["monthly_limit"]) for row in rows}
 
 
-def set_budget(user_id: int, category: str, monthly_limit: float) -> None:
+def set_budget(user_id: int, category: str, monthly_limit: float, rollover_enabled: bool | None = None) -> None:
     """Upsert a budget row for user_id."""
+    cat = category.lower().strip()
+    with get_db_cursor() as cur:
+        if rollover_enabled is not None:
+            cur.execute(
+                """
+                INSERT INTO budgets (user_id, category, monthly_limit, rollover_enabled)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, category)
+                DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit, rollover_enabled = EXCLUDED.rollover_enabled
+                """,
+                (user_id, cat, monthly_limit, rollover_enabled),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO budgets (user_id, category, monthly_limit)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, category)
+                DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
+                """,
+                (user_id, cat, monthly_limit),
+            )
+
+
+def delete_budget(user_id: int, category: str) -> bool:
+    """Delete a budget row entirely for user_id."""
     with get_db_cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO budgets (user_id, category, monthly_limit)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, category)
-            DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
-            """,
-            (user_id, category.lower().strip(), monthly_limit),
+            "DELETE FROM budgets WHERE user_id = %s AND LOWER(category) = LOWER(%s)",
+            (user_id, category.strip()),
         )
+        return cur.rowcount > 0
+
+
+def get_budgets_manager(user_id: int) -> list[dict]:
+    """
+    Table of all categories (preset + custom + any configured) with current monthly limit,
+    this month's spend, and rollover status.
+    """
+    cur_m = current_month()
+    spend_map = spend_by_category(user_id, cur_m)
+    custom_cats = [c.lower() for c in get_user_categories(user_id)]
+
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT category, monthly_limit, rollover_enabled FROM budgets WHERE user_id = %s",
+            (user_id,),
+        )
+        budget_rows = {
+            r["category"].lower(): {
+                "limit": float(r["monthly_limit"]),
+                "rollover": bool(r["rollover_enabled"]),
+            }
+            for r in cur.fetchall()
+        }
+
+    all_cat_names = set(c.lower() for c in SYSTEM_CATEGORIES)
+    all_cat_names.update(custom_cats)
+    all_cat_names.update(budget_rows.keys())
+
+    result = []
+    for cat in sorted(all_cat_names):
+        b_info = budget_rows.get(cat, {"limit": 0.0, "rollover": False})
+        has_budget = cat in budget_rows
+        limit = b_info["limit"] if has_budget else 0.0
+        spent = round(spend_map.get(cat, 0.0), 2)
+        remaining = round(limit - spent, 2) if has_budget else None
+        result.append({
+            "category": cat,
+            "monthly_limit": limit,
+            "has_budget": has_budget,
+            "current_spend": spent,
+            "remaining": remaining,
+            "rollover_enabled": b_info["rollover"],
+            "is_custom": cat in custom_cats,
+        })
+    return result
 
 
 def current_month() -> str:
@@ -687,9 +945,24 @@ def add_udhar(
     due_date: str | None = None,
     is_split: bool = False,
     transaction_id: int | None = None,
+    entry_date: str | None = None,
 ) -> dict:
-    """Add a new udhar (lent or borrowed) entry. Never counted in expenses."""
+    """Add a new udhar entry. Never counted in expenses."""
     person_key = person_name.strip().lower()
+    norm_kind = kind.strip().lower()
+    entry_note = note.strip()
+
+    if norm_kind in ("received_back", "received back", "received"):
+        db_kind = "borrowed"
+        if not entry_note:
+            entry_note = "Received back"
+    elif norm_kind in ("paid_back", "paid back", "paid"):
+        db_kind = "lent"
+        if not entry_note:
+            entry_note = "Paid back"
+    else:
+        db_kind = norm_kind
+
     due_dt = None
     if due_date:
         try:
@@ -697,15 +970,32 @@ def add_udhar(
         except ValueError:
             due_dt = None
 
+    entry_dt = None
+    if entry_date:
+        try:
+            entry_dt = datetime.fromisoformat(entry_date)
+        except ValueError:
+            entry_dt = None
+
     with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id
-            """,
-            (user_id, person_name.strip(), person_key, kind, amount, note.strip(), due_dt, is_split, transaction_id),
-        )
+        if entry_dt:
+            cur.execute(
+                """
+                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id, entry_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id
+                """,
+                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id, entry_dt),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id
+                """,
+                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id),
+            )
         row = cur.fetchone()
         d = dict(row)
         for f in ("entry_date", "due_date"):
@@ -714,6 +1004,66 @@ def add_udhar(
         d["amount"] = float(d["amount"])
         d["is_split"] = bool(d.get("is_split", False))
         return d
+
+
+def update_udhar_entry(
+    user_id: int,
+    entry_id: int,
+    amount: float | None = None,
+    note: str | None = None,
+    entry_date: str | None = None,
+    due_date: str | None = None,
+) -> dict | None:
+    """Update an existing udhar entry owned by user_id."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT * FROM udhar_entries WHERE id = %s AND user_id = %s", (entry_id, user_id))
+        existing = cur.fetchone()
+        if not existing:
+            return None
+
+        new_amount = amount if amount is not None else float(existing["amount"])
+        new_note = note.strip() if note is not None else existing["note"]
+        new_entry_date = entry_date if entry_date is not None else existing["entry_date"]
+
+        if due_date == "":
+            new_due_date = None
+        elif due_date is not None:
+            new_due_date = due_date
+        else:
+            new_due_date = existing["due_date"]
+
+        cur.execute(
+            """
+            UPDATE udhar_entries
+            SET amount = %s, note = %s, entry_date = %s::timestamptz, due_date = %s::timestamptz
+            WHERE id = %s AND user_id = %s
+            RETURNING id, person_name, person_key, kind, amount, note, entry_date, due_date, is_split, transaction_id
+            """,
+            (new_amount, new_note, new_entry_date, new_due_date, entry_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for f in ("entry_date", "due_date"):
+            if d.get(f) and hasattr(d[f], "isoformat"):
+                d[f] = d[f].isoformat()
+        d["amount"] = float(d["amount"])
+        return d
+
+
+def delete_udhar_entry(user_id: int, entry_id: int) -> bool:
+    """Delete an udhar entry owned by user_id."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM udhar_entries WHERE id = %s AND user_id = %s", (entry_id, user_id))
+        return cur.rowcount > 0
+
+
+def resolve_udhar_due_date(user_id: int, entry_id: int) -> bool:
+    """Clear due_date on an udhar entry so overdue highlight is removed."""
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE udhar_entries SET due_date = NULL WHERE id = %s AND user_id = %s", (entry_id, user_id))
+        return cur.rowcount > 0
 
 
 def record_udhar_repayment(
@@ -1056,6 +1406,53 @@ def get_goals(user_id: int) -> list[dict]:
             (user_id,),
         )
         return [_format_goal(r) for r in cur.fetchall()]
+
+
+def update_savings_goal(
+    user_id: int,
+    goal_id: int,
+    name: str | None = None,
+    target_amount: float | None = None,
+    target_date: str | None = None,
+) -> dict | None:
+    """Update an existing savings goal owned by user_id."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT * FROM savings_goals WHERE id = %s AND user_id = %s", (goal_id, user_id))
+        existing = cur.fetchone()
+        if not existing:
+            return None
+
+        new_name = name.strip() if name is not None else existing["name"]
+        new_target = target_amount if target_amount is not None else float(existing["target_amount"])
+
+        if target_date == "":
+            new_date = None
+        elif target_date is not None:
+            try:
+                new_date = datetime.fromisoformat(target_date).date()
+            except Exception:
+                new_date = None
+        else:
+            new_date = existing["target_date"]
+
+        cur.execute(
+            """
+            UPDATE savings_goals
+            SET name = %s, target_amount = %s, target_date = %s
+            WHERE id = %s AND user_id = %s
+            RETURNING id, name, target_amount, saved_amount, target_date
+            """,
+            (new_name, new_target, new_date, goal_id, user_id),
+        )
+        row = cur.fetchone()
+        return _format_goal(row) if row else None
+
+
+def delete_savings_goal(user_id: int, goal_id: int) -> bool:
+    """Delete a savings goal owned by user_id."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM savings_goals WHERE id = %s AND user_id = %s", (goal_id, user_id))
+        return cur.rowcount > 0
 
 
 # ---------- User Profile ----------
@@ -1693,6 +2090,92 @@ def deactivate_recurring_expense(user_id: int, expense_id: int) -> bool:
             """,
             (expense_id, user_id),
         )
+        return cur.rowcount > 0
+
+
+def toggle_recurring_expense(user_id: int, expense_id: int, active: bool | None = None) -> dict | None:
+    """Toggle or set the active status of a recurring expense."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT active FROM recurring_expenses WHERE id = %s AND user_id = %s", (expense_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return None
+        new_active = not row["active"] if active is None else active
+        cur.execute(
+            """
+            UPDATE recurring_expenses
+            SET active = %s
+            WHERE id = %s AND user_id = %s
+            RETURNING id, name, amount, category, frequency, next_due_date, active, last_reminded_date, created_at
+            """,
+            (new_active, expense_id, user_id),
+        )
+        updated = cur.fetchone()
+        if not updated:
+            return None
+        d = dict(updated)
+        d["amount"] = float(d["amount"])
+        for f in ("next_due_date", "last_reminded_date", "created_at"):
+            if d.get(f) and hasattr(d[f], "isoformat"):
+                d[f] = d[f].isoformat()
+        return d
+
+
+def update_recurring_expense(
+    user_id: int,
+    expense_id: int,
+    name: str | None = None,
+    amount: float | None = None,
+    category: str | None = None,
+    frequency: str | None = None,
+    next_due_date: str | None = None,
+    active: bool | None = None,
+) -> dict | None:
+    """Update fields of an existing recurring expense."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT * FROM recurring_expenses WHERE id = %s AND user_id = %s", (expense_id, user_id))
+        existing = cur.fetchone()
+        if not existing:
+            return None
+
+        new_name = name.strip() if name is not None else existing["name"]
+        new_amount = amount if amount is not None else float(existing["amount"])
+        new_category = category.strip() if category is not None else existing["category"]
+        new_freq = frequency.strip() if frequency is not None else existing["frequency"]
+        new_active = active if active is not None else existing["active"]
+
+        if next_due_date is not None:
+            try:
+                new_date = datetime.fromisoformat(next_due_date).date()
+            except Exception:
+                new_date = existing["next_due_date"]
+        else:
+            new_date = existing["next_due_date"]
+
+        cur.execute(
+            """
+            UPDATE recurring_expenses
+            SET name = %s, amount = %s, category = %s, frequency = %s, next_due_date = %s, active = %s
+            WHERE id = %s AND user_id = %s
+            RETURNING id, name, amount, category, frequency, next_due_date, active, last_reminded_date, created_at
+            """,
+            (new_name, new_amount, new_category, new_freq, new_date, new_active, expense_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["amount"] = float(d["amount"])
+        for f in ("next_due_date", "last_reminded_date", "created_at"):
+            if d.get(f) and hasattr(d[f], "isoformat"):
+                d[f] = d[f].isoformat()
+        return d
+
+
+def delete_recurring_expense(user_id: int, expense_id: int) -> bool:
+    """Delete a recurring expense owned by user_id."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM recurring_expenses WHERE id = %s AND user_id = %s", (expense_id, user_id))
         return cur.rowcount > 0
 
 
@@ -2423,3 +2906,1885 @@ def generate_monthly_pdf(user_id: int, user_email: str, month: str) -> bytes:
 
     doc.build(elements)
     return buf.getvalue()
+
+
+# ======================================================================
+# USERNAME & AVATAR
+# ======================================================================
+
+def set_username(user_id: int, username: str) -> dict:
+    """Set a username (3-20 chars, alphanumeric + underscores)."""
+    clean = username.strip()
+    if len(clean) < 3 or len(clean) > 20:
+        raise ValueError("Username must be 3-20 characters.")
+    with get_db_cursor() as cur:
+        cur.execute(
+            "UPDATE users SET username = %s WHERE id = %s RETURNING id, email, username, avatar_id",
+            (clean, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def set_avatar(user_id: int, avatar_id: int) -> dict:
+    """Set avatar_id (1-8)."""
+    aid = max(1, min(8, avatar_id))
+    with get_db_cursor() as cur:
+        cur.execute(
+            "UPDATE users SET avatar_id = %s WHERE id = %s RETURNING id, email, username, avatar_id",
+            (aid, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def get_user_display(user_id: int) -> dict:
+    """Get display info: username, avatar_id, email."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT id, email, username, avatar_id FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return {}
+        d = dict(row)
+        d["needs_username"] = not bool(d.get("username"))
+        return d
+
+
+# ======================================================================
+# MERCHANT NORMALIZATION
+# ======================================================================
+
+# Built-in merchant alias list: common Indian merchants
+_BUILTIN_ALIASES: dict[str, str] = {
+    "swiggy": "Swiggy",
+    "zomato": "Zomato",
+    "zepto": "Zepto",
+    "blinkit": "Blinkit",
+    "bigbasket": "BigBasket",
+    "dmart": "DMart",
+    "amazon": "Amazon",
+    "flipkart": "Flipkart",
+    "myntra": "Myntra",
+    "uber": "Uber",
+    "ola": "Ola",
+    "rapido": "Rapido",
+    "irctc": "IRCTC",
+    "jio": "Jio",
+    "airtel": "Airtel",
+    "vi": "Vi",
+    "bsnl": "BSNL",
+    "netflix": "Netflix",
+    "hotstar": "Hotstar",
+    "spotify": "Spotify",
+    "youtube": "YouTube",
+    "gpay": "GPay",
+    "paytm": "Paytm",
+    "phonepe": "PhonePe",
+    "cred": "CRED",
+    "dunzo": "Dunzo",
+    "nykaa": "Nykaa",
+    "bookmyshow": "BookMyShow",
+    "makemytrip": "MakeMyTrip",
+    "goibibo": "Goibibo",
+    "cleartrip": "Cleartrip",
+    "ajio": "AJIO",
+    "meesho": "Meesho",
+    "reliance": "Reliance",
+    "tata": "Tata",
+    "bigbazaar": "BigBazaar",
+    "starbucks": "Starbucks",
+    "mcdonalds": "McDonald's",
+    "kfc": "KFC",
+    "dominos": "Domino's",
+    "pizzahut": "Pizza Hut",
+    "subway": "Subway",
+    "haldirams": "Haldiram's",
+    "decathlon": "Decathlon",
+    "ikea": "IKEA",
+    "hdfc": "HDFC",
+    "sbi": "SBI",
+    "icici": "ICICI",
+    "kotak": "Kotak",
+    "axis": "Axis",
+}
+
+import re as _re
+import unicodedata as _ud
+
+def _clean_merchant_text(text: str) -> str:
+    """Lowercase, strip punctuation, remove order IDs and city suffixes."""
+    s = text.lower().strip()
+    # Remove order IDs like #12345, order-67890
+    s = _re.sub(r'[#]?\b(order|txn|ref|id)[- _]?[a-z0-9]+\b', '', s, flags=_re.IGNORECASE)
+    # Remove city suffixes like *BLR, *MUM etc
+    s = _re.sub(r'\*[a-z]{2,5}\b', '', s)
+    # Strip all non-alphanumeric except spaces
+    s = _re.sub(r'[^a-z0-9\s]', ' ', s)
+    s = _re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def _fuzzy_match(needle: str, haystack: str, threshold: float = 0.7) -> bool:
+    """Simple character-overlap similarity for fuzzy matching."""
+    if not needle or not haystack:
+        return False
+    a, b = set(needle.lower()), set(haystack.lower())
+    if not a or not b:
+        return False
+    overlap = len(a & b) / max(len(a | b), 1)
+    # Also check if one contains the other
+    if needle.lower() in haystack.lower() or haystack.lower() in needle.lower():
+        return True
+    return overlap >= threshold
+
+
+def normalize_merchant(user_id: int, raw_note: str) -> str | None:
+    """Deterministic merchant normalization. No LLM calls.
+    1. Clean the text
+    2. Check user's custom aliases
+    3. Check built-in alias list
+    4. Fuzzy match against user's prior merchants
+    5. Return normalized name or None if no match
+    """
+    if not raw_note or len(raw_note.strip()) < 2:
+        return None
+
+    cleaned = _clean_merchant_text(raw_note)
+    if not cleaned:
+        return None
+
+    # 1. Check user's custom aliases
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT normalized_name FROM merchant_aliases WHERE user_id = %s AND LOWER(raw_input) = LOWER(%s)",
+            (user_id, cleaned),
+        )
+        row = cur.fetchone()
+        if row:
+            return row["normalized_name"]
+
+    # 2. Check built-in aliases
+    for key, canonical in _BUILTIN_ALIASES.items():
+        if key in cleaned or _fuzzy_match(key, cleaned):
+            return canonical
+
+    # 3. Fuzzy match against user's prior merchant names
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT merchant FROM transactions
+            WHERE user_id = %s AND merchant IS NOT NULL
+            ORDER BY merchant
+            LIMIT 100
+            """,
+            (user_id,),
+        )
+        priors = [r["merchant"] for r in cur.fetchall()]
+
+    for prior in priors:
+        if _fuzzy_match(cleaned, _clean_merchant_text(prior)):
+            return prior
+
+    # No match found -- title-case the cleaned text as a reasonable display name
+    if len(cleaned) >= 3:
+        return cleaned.title()
+
+    return None
+
+
+def add_merchant_alias(user_id: int, raw_input: str, normalized_name: str) -> dict:
+    """Store a user correction for merchant normalization."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO merchant_aliases (user_id, raw_input, normalized_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, LOWER(raw_input))
+            DO UPDATE SET normalized_name = EXCLUDED.normalized_name
+            RETURNING id, raw_input, normalized_name
+            """,
+            (user_id, raw_input.strip().lower(), normalized_name.strip()),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+# ======================================================================
+# DUPLICATE DETECTION
+# ======================================================================
+
+def check_duplicate_expense(user_id: int, amount: float, category: str = "", note: str = "", entry_date: str | None = None) -> dict | None:
+    """Check if a similar expense was logged today or on entry_date. Returns the existing record if found."""
+    with get_db_cursor() as cur:
+        if entry_date:
+            cur.execute(
+                """
+                SELECT id, amount, category, note, merchant, date
+                FROM transactions
+                WHERE user_id = %s
+                  AND amount = %s
+                  AND DATE(date) = %s
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (user_id, amount, entry_date),
+            )
+        else:
+            cat_clause = "AND category = %s" if category else ""
+            params = [user_id, amount]
+            if category:
+                params.append(category.lower().strip())
+            cur.execute(
+                f"""
+                SELECT id, amount, category, note, merchant, date
+                FROM transactions
+                WHERE user_id = %s
+                  AND amount = %s
+                  {cat_clause}
+                  AND DATE(date AT TIME ZONE 'UTC') = CURRENT_DATE
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+        row = cur.fetchone()
+        if row:
+            d = dict(row)
+            d["amount"] = float(d["amount"])
+            if hasattr(d.get("date"), "isoformat"):
+                d["date"] = d["date"].isoformat()
+            return d
+    return None
+
+
+# ======================================================================
+# UNDO SYSTEM
+# ======================================================================
+
+def store_undo_state(user_id: int, action_type: str, entity_type: str, entity_id: int, previous_state: dict | None) -> None:
+    """Store the last reversible action for a user. Only keeps the most recent one."""
+    import json
+    with get_db_cursor() as cur:
+        # Delete all previous undo entries for this user (only keep latest)
+        cur.execute("DELETE FROM undo_log WHERE user_id = %s", (user_id,))
+        cur.execute(
+            """
+            INSERT INTO undo_log (user_id, action_type, entity_type, entity_id, previous_state)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (user_id, action_type, entity_type, entity_id,
+             json.dumps(previous_state) if previous_state else None),
+        )
+
+
+def execute_undo(user_id: int) -> str:
+    """Execute undo of the last reversible action. Expires after 10 minutes."""
+    import json
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, action_type, entity_type, entity_id, previous_state, created_at
+            FROM undo_log
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return "Nothing to undo."
+
+        created = row["created_at"]
+        if hasattr(created, "timestamp"):
+            import time
+            age = time.time() - created.timestamp()
+        else:
+            age = 0
+        if age > 600:  # 10 minutes
+            cur.execute("DELETE FROM undo_log WHERE id = %s", (row["id"],))
+            return "The undo window has expired (10 minutes). Nothing to undo."
+
+        action = row["action_type"]
+        entity = row["entity_type"]
+        eid = row["entity_id"]
+        prev = json.loads(row["previous_state"]) if row["previous_state"] else None
+
+        result_msg = "Nothing to undo."
+
+        if entity == "transaction":
+            if action == "log":
+                # Undo a log = delete the transaction
+                cur.execute(
+                    "DELETE FROM transactions WHERE id = %s AND user_id = %s",
+                    (eid, user_id),
+                )
+                if cur.rowcount > 0:
+                    result_msg = f"Undone -- removed the last logged expense (Rs {prev['amount']:.0f} under {prev['category']})." if prev else "Undone -- removed the last logged expense."
+                else:
+                    result_msg = "Could not undo -- the transaction may have already been deleted."
+            elif action == "update" and prev:
+                # Undo an update = restore previous values
+                cur.execute(
+                    """
+                    UPDATE transactions
+                    SET amount = %s, category = %s, note = %s
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (prev.get("amount"), prev.get("category"), prev.get("note", ""), eid, user_id),
+                )
+                result_msg = f"Undone -- restored transaction to Rs {float(prev['amount']):.0f} under {prev['category']}."
+            elif action == "delete" and prev:
+                # Undo a delete = re-insert the transaction
+                cur.execute(
+                    """
+                    INSERT INTO transactions (id, user_id, amount, category, note, date)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (eid, user_id, prev.get("amount"), prev.get("category"),
+                     prev.get("note", ""), prev.get("date")),
+                )
+                result_msg = f"Undone -- restored deleted expense of Rs {float(prev['amount']):.0f} under {prev['category']}."
+
+        # Remove the used undo entry
+        cur.execute("DELETE FROM undo_log WHERE id = %s", (row["id"],))
+
+    return result_msg
+
+
+def get_undo_status(user_id: int) -> dict:
+    """Check if undo is available for this user."""
+    import json, time
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT action_type, entity_type, entity_id, previous_state, created_at
+            FROM undo_log WHERE user_id = %s
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"available": False}
+        created = row["created_at"]
+        age = time.time() - created.timestamp() if hasattr(created, "timestamp") else 0
+        if age > 600:
+            return {"available": False, "reason": "expired"}
+        prev = json.loads(row["previous_state"]) if row["previous_state"] else {}
+        return {
+            "available": True,
+            "action_type": row["action_type"],
+            "entity_type": row["entity_type"],
+            "entity_id": row["entity_id"],
+            "description": f"{row['action_type']} {row['entity_type']}",
+            "seconds_remaining": max(0, int(600 - age)),
+            "previous_amount": float(prev.get("amount", 0)) if prev.get("amount") else None,
+            "previous_category": prev.get("category"),
+        }
+
+
+def get_transaction_by_id(user_id: int, transaction_id: int) -> dict | None:
+    """Get a single transaction by ID, owned by user_id. Used for undo state capture."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT id, amount, category, note, date, merchant FROM transactions WHERE id = %s AND user_id = %s",
+            (transaction_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["amount"] = float(d["amount"])
+        if hasattr(d.get("date"), "isoformat"):
+            d["date"] = d["date"].isoformat()
+        return d
+
+
+# ======================================================================
+# CUSTOM CATEGORIES
+# ======================================================================
+
+# System-level default categories
+SYSTEM_CATEGORIES = [
+    "food", "groceries", "travel", "rent", "bills", "entertainment",
+    "shopping", "health", "other", "eating out", "utilities",
+    "personal care", "emergency fund", "sip / investments", "miscellaneous",
+]
+
+
+def get_all_categories(user_id: int) -> list[str]:
+    """Return system + user custom categories, deduplicated and sorted."""
+    user_cats = get_user_categories(user_id)
+    all_cats = set(c.lower() for c in SYSTEM_CATEGORIES)
+    all_cats.update(c.lower() for c in user_cats)
+    return sorted(all_cats)
+
+
+def get_user_categories(user_id: int) -> list[str]:
+    """Get user's custom categories."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT name FROM user_categories WHERE user_id = %s ORDER BY name",
+            (user_id,),
+        )
+        return [r["name"] for r in cur.fetchall()]
+
+
+def add_user_category(user_id: int, name: str) -> dict:
+    """Add a custom category for a user. Case-insensitive duplicates prevented."""
+    clean = name.strip().lower()
+    if not clean or len(clean) < 2:
+        raise ValueError("Category name must be at least 2 characters.")
+    if clean in (c.lower() for c in SYSTEM_CATEGORIES):
+        raise ValueError(f"'{clean}' is a built-in category.")
+    with get_db_cursor() as cur:
+        try:
+            cur.execute(
+                """
+                INSERT INTO user_categories (user_id, name)
+                VALUES (%s, %s)
+                RETURNING id, name
+                """,
+                (user_id, clean),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else {}
+        except Exception:
+            raise ValueError(f"Category '{clean}' already exists.")
+
+
+def remove_user_category(user_id: int, name: str) -> bool:
+    """Remove a user's custom category."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_categories WHERE user_id = %s AND LOWER(name) = LOWER(%s)",
+            (user_id, name.strip()),
+        )
+        return cur.rowcount > 0
+
+
+# ======================================================================
+# TRANSACTION TAGS
+# ======================================================================
+
+def add_transaction_tag(user_id: int, transaction_id: int, tag: str) -> dict:
+    """Add a tag to a transaction."""
+    clean = tag.strip().lower()
+    if not clean:
+        raise ValueError("Tag cannot be empty.")
+    with get_db_cursor() as cur:
+        try:
+            cur.execute(
+                """
+                INSERT INTO transaction_tags (transaction_id, user_id, tag)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (transaction_id, LOWER(tag)) DO NOTHING
+                RETURNING id, transaction_id, tag
+                """,
+                (transaction_id, user_id, clean),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else {"transaction_id": transaction_id, "tag": clean}
+        except Exception:
+            return {"transaction_id": transaction_id, "tag": clean}
+
+
+def remove_transaction_tag(user_id: int, transaction_id: int, tag: str) -> bool:
+    """Remove a tag from a transaction."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM transaction_tags WHERE user_id = %s AND transaction_id = %s AND LOWER(tag) = LOWER(%s)",
+            (user_id, transaction_id, tag.strip()),
+        )
+        return cur.rowcount > 0
+
+
+def get_transaction_tags(user_id: int, transaction_id: int) -> list[str]:
+    """Get all tags for a transaction."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT tag FROM transaction_tags WHERE user_id = %s AND transaction_id = %s ORDER BY tag",
+            (user_id, transaction_id),
+        )
+        return [r["tag"] for r in cur.fetchall()]
+
+
+def get_all_user_tags(user_id: int) -> list[str]:
+    """Get all unique tags used by a user."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT tag FROM transaction_tags WHERE user_id = %s ORDER BY tag",
+            (user_id,),
+        )
+        return [r["tag"] for r in cur.fetchall()]
+
+
+# ======================================================================
+# SEARCH & FILTER TRANSACTIONS
+# ======================================================================
+
+def search_transactions(
+    user_id: int,
+    text: str | None = None,
+    category: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    tag: str | None = None,
+    merchant: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+    sort_by: str = "date",
+    sort_order: str = "desc",
+) -> dict:
+    """Search and filter transactions with pagination and sorting."""
+    conditions = ["t.user_id = %s"]
+    params: list = [user_id]
+
+    if text:
+        conditions.append("(LOWER(t.note) LIKE %s OR LOWER(t.merchant) LIKE %s)")
+        like_text = f"%{text.strip().lower()}%"
+        params.extend([like_text, like_text])
+    if category:
+        conditions.append("t.category = %s")
+        params.append(category.lower().strip())
+    if amount_min is not None:
+        conditions.append("t.amount >= %s")
+        params.append(amount_min)
+    if amount_max is not None:
+        conditions.append("t.amount <= %s")
+        params.append(amount_max)
+    if start_date:
+        conditions.append("DATE(t.date) >= %s")
+        params.append(start_date)
+    if end_date:
+        conditions.append("DATE(t.date) <= %s")
+        params.append(end_date)
+    if tag:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND LOWER(tt.tag) = LOWER(%s))"
+        )
+        params.append(tag.strip())
+    if merchant:
+        conditions.append("LOWER(t.merchant) LIKE %s")
+        params.append(f"%{merchant.strip().lower()}%")
+
+    where = " AND ".join(conditions)
+    offset = (page - 1) * per_page
+
+    valid_sort_cols = {
+        "date": "t.date",
+        "amount": "t.amount",
+        "category": "t.category",
+        "merchant": "t.merchant",
+        "id": "t.id",
+    }
+    order_col = valid_sort_cols.get(sort_by.lower() if sort_by else "date", "t.date")
+    order_dir = "ASC" if sort_order and sort_order.lower() == "asc" else "DESC"
+
+    with get_db_cursor() as cur:
+        # Count total
+        cur.execute(f"SELECT COUNT(*) as total FROM transactions t WHERE {where}", tuple(params))
+        total = cur.fetchone()["total"]
+
+        # Fetch page
+        cur.execute(
+            f"""
+            SELECT t.id, t.date, t.amount, t.category, t.note, t.merchant
+            FROM transactions t
+            WHERE {where}
+            ORDER BY {order_col} {order_dir}, t.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            tuple(params + [per_page, offset]),
+        )
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["amount"] = float(d["amount"])
+            if hasattr(d.get("date"), "isoformat"):
+                d["date"] = d["date"].isoformat()
+            # Fetch tags
+            d["tags"] = get_transaction_tags(user_id, d["id"])
+            results.append(d)
+
+    return {
+        "transactions": results,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": (total + per_page - 1) // per_page if per_page > 0 else 0,
+    }
+
+
+# ======================================================================
+# DATE-RANGE DASHBOARD
+# ======================================================================
+
+def get_dashboard_ranged(
+    user_id: int,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """Dashboard data with optional date range filtering.
+    If no dates given, defaults to current month."""
+    is_custom = bool(start_date or end_date)
+    if not start_date and not end_date:
+        month = current_month()
+        start_date = f"{month}-01"
+        y, m = map(int, month.split("-"))
+        last_day = calendar.monthrange(y, m)[1]
+        end_date = f"{month}-{last_day}"
+    elif not start_date:
+        start_date = "2020-01-01"
+    elif not end_date:
+        end_date = date.today().isoformat()
+
+    with get_db_cursor() as cur:
+        # Category spend in range
+        cur.execute(
+            """
+            SELECT category, SUM(amount) as total
+            FROM transactions
+            WHERE user_id = %s AND DATE(date) >= %s AND DATE(date) <= %s
+            GROUP BY category
+            """,
+            (user_id, start_date, end_date),
+        )
+        spend = {r["category"]: float(r["total"]) for r in cur.fetchall()}
+
+        # Daily spend in range
+        cur.execute(
+            """
+            SELECT DATE(date AT TIME ZONE 'UTC') as day, SUM(amount) as total
+            FROM transactions
+            WHERE user_id = %s AND DATE(date) >= %s AND DATE(date) <= %s
+            GROUP BY day ORDER BY day ASC
+            """,
+            (user_id, start_date, end_date),
+        )
+        daily = [
+            {"day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else str(r["day"]),
+             "total": float(r["total"])}
+            for r in cur.fetchall()
+        ]
+
+    # Monthly trends (always last 6 months regardless of range)
+    monthly_trends = get_monthly_totals(user_id, num_months=6)
+
+    # Budgets: only meaningful for single-month ranges
+    month_str = start_date[:7] if start_date else current_month()
+    eff_budgets = get_effective_budgets(user_id, month_str)
+    udhar = get_udhar_summary(user_id)
+
+    all_categories = sorted(set(list(spend.keys()) + list(eff_budgets.keys())))
+    categories = []
+    total_spent = 0.0
+    total_budget = 0.0
+
+    for cat in all_categories:
+        spent = spend.get(cat, 0.0)
+        eff = eff_budgets.get(cat)
+        limit = eff["effective_budget"] if eff else None
+        base_limit = eff["base_limit"] if eff else None
+        rollover_enabled = eff["rollover_enabled"] if eff else False
+        carried = eff["carried_amount"] if eff else 0.0
+        total_spent += spent
+
+        entry = {
+            "category": cat,
+            "spent": round(spent, 2),
+            "budget": round(limit, 2) if limit is not None else None,
+            "base_budget": round(base_limit, 2) if base_limit is not None else None,
+            "rollover_enabled": rollover_enabled,
+            "carried_amount": round(carried, 2),
+            "percentage": round((spent / limit) * 100, 1) if limit else None,
+        }
+        if limit is not None:
+            total_budget += limit
+        categories.append(entry)
+
+    categories.sort(key=lambda x: x["spent"], reverse=True)
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "is_custom_range": is_custom,
+        "total_spent": round(total_spent, 2),
+        "total_budget": round(total_budget, 2) if total_budget > 0 else None,
+        "categories": categories,
+        "daily_spend": daily,
+        "monthly_trends": monthly_trends,
+        "udhar_net": udhar["net"],
+        "udhar_lent": udhar["total_lent"],
+        "udhar_borrowed": udhar["total_borrowed"],
+    }
+
+
+# ======================================================================
+# CLEAR & DELETE DATA
+# ======================================================================
+
+def clear_transactions(user_id: int, start_date: str | None = None, end_date: str | None = None) -> int:
+    """Clear transactions for a user. Optional date range."""
+    with get_db_cursor() as cur:
+        if start_date and end_date:
+            cur.execute(
+                "DELETE FROM transactions WHERE user_id = %s AND DATE(date) >= %s AND DATE(date) <= %s",
+                (user_id, start_date, end_date),
+            )
+        else:
+            cur.execute("DELETE FROM transactions WHERE user_id = %s", (user_id,))
+        return cur.rowcount
+
+
+def clear_udhar(user_id: int) -> int:
+    """Clear all udhar entries for a user."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM udhar_entries WHERE user_id = %s", (user_id,))
+        return cur.rowcount
+
+
+def clear_everything(user_id: int) -> dict:
+    """Clear all user data except the account itself."""
+    from app.storage import delete_from_storage
+    counts = {}
+    with get_db_cursor() as cur:
+        # Get receipt paths to delete from storage
+        cur.execute("SELECT path FROM receipts WHERE user_id = %s", (user_id,))
+        receipt_paths = [r["path"] for r in cur.fetchall()]
+        cur.execute("DELETE FROM receipts WHERE user_id = %s", (user_id,))
+        counts["receipts"] = cur.rowcount
+
+        cur.execute("DELETE FROM push_subscriptions WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM sent_notifications WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM undo_log WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM transaction_tags WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM merchant_aliases WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM user_categories WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM budget_rollovers WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM recurring_expenses WHERE user_id = %s", (user_id,))
+        counts["recurring"] = cur.rowcount
+        cur.execute("DELETE FROM chat_messages WHERE user_id = %s", (user_id,))
+        counts["chats"] = cur.rowcount
+        cur.execute("DELETE FROM savings_goals WHERE user_id = %s", (user_id,))
+        counts["goals"] = cur.rowcount
+        cur.execute("DELETE FROM income_entries WHERE user_id = %s", (user_id,))
+        counts["income"] = cur.rowcount
+        cur.execute("DELETE FROM udhar_entries WHERE user_id = %s", (user_id,))
+        counts["udhar"] = cur.rowcount
+        cur.execute("DELETE FROM transactions WHERE user_id = %s", (user_id,))
+        counts["transactions"] = cur.rowcount
+        cur.execute("DELETE FROM budgets WHERE user_id = %s", (user_id,))
+        counts["budgets"] = cur.rowcount
+        cur.execute("DELETE FROM user_profile WHERE user_id = %s", (user_id,))
+
+    if receipt_paths:
+        for p in receipt_paths:
+            try:
+                delete_from_storage(p)
+            except Exception:
+                pass
+
+    return counts
+
+
+def delete_account(user_id: int) -> bool:
+    """Delete the entire user account and all associated files and data."""
+    from app.storage import delete_from_storage
+    receipt_paths = []
+    with get_db_cursor() as cur:
+        cur.execute("SELECT path FROM receipts WHERE user_id = %s", (user_id,))
+        receipt_paths = [r["path"] for r in cur.fetchall()]
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        deleted = cur.rowcount > 0
+
+    if deleted and receipt_paths:
+        for p in receipt_paths:
+            try:
+                delete_from_storage(p)
+            except Exception:
+                pass
+
+    return deleted
+
+
+def export_all_data_json(user_id: int) -> dict:
+    """Export all user data as a structured JSON dict for download."""
+    import json
+    with get_db_cursor() as cur:
+        cur.execute("SELECT id, email, username, avatar_id, created_at FROM users WHERE id = %s", (user_id,))
+        user_row = cur.fetchone()
+        user_info = dict(user_row) if user_row else {}
+        if hasattr(user_info.get("created_at"), "isoformat"):
+            user_info["created_at"] = user_info["created_at"].isoformat()
+
+    transactions = get_transactions(user_id=user_id)
+    income = get_income_entries(user_id=user_id)
+    budgets = get_budgets(user_id=user_id)
+    goals = get_goals(user_id=user_id)
+    udhar = get_udhar_summary(user_id=user_id)
+    profile = get_user_profile(user_id=user_id)
+    recurring = get_recurring_expenses(user_id=user_id)
+    categories = get_user_categories(user_id=user_id)
+    receipts_list = get_receipts(user_id=user_id)
+
+    return {
+        "user": user_info,
+        "transactions": transactions,
+        "income_entries": income,
+        "budgets": budgets,
+        "savings_goals": goals,
+        "udhar": udhar,
+        "profile": profile,
+        "recurring_expenses": recurring,
+        "custom_categories": categories,
+        "receipts": receipts_list,
+        "exported_at": datetime.now().isoformat(),
+    }
+
+
+# ======================================================================
+# Tier 3 Features: Receipts, Import Caching, Udhar Nudge,
+# Cash-Flow Calendar, Overspending Projections, Web Push
+# ======================================================================
+
+def add_receipt(user_id: int, transaction_id: Optional[int], path: str, mime: str, size: int) -> dict:
+    """Record receipt metadata in Postgres."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO receipts (user_id, transaction_id, path, mime, size)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, user_id, transaction_id, path, mime, size, created_at
+            """,
+            (user_id, transaction_id, path, mime, size),
+        )
+        row = cur.fetchone()
+        d = dict(row)
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        return d
+
+
+def get_receipts(user_id: int) -> list[dict]:
+    """List all receipts owned by user_id, joined with transaction info."""
+    from app.storage import get_signed_url
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id, r.user_id, r.transaction_id, r.path, r.mime, r.size, r.created_at,
+                   t.amount, t.category, t.note, t.merchant, t.date as transaction_date
+            FROM receipts r
+            LEFT JOIN transactions t ON r.transaction_id = t.id
+            WHERE r.user_id = %s
+            ORDER BY r.created_at DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            if hasattr(d.get("transaction_date"), "isoformat"):
+                d["transaction_date"] = d["transaction_date"].isoformat()
+            if d.get("amount") is not None:
+                d["amount"] = float(d["amount"])
+            d["signed_url"] = get_signed_url(d["path"])
+            result.append(d)
+        return result
+
+
+def get_receipt_by_id(user_id: int, receipt_id: int) -> Optional[dict]:
+    """Get a single receipt ensuring user ownership."""
+    from app.storage import get_signed_url
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, transaction_id, path, mime, size, created_at
+            FROM receipts
+            WHERE id = %s AND user_id = %s
+            """,
+            (receipt_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        d["signed_url"] = get_signed_url(d["path"])
+        return d
+
+
+def delete_receipt(user_id: int, receipt_id: int) -> Optional[str]:
+    """Delete receipt record from DB. Returns storage path so caller deletes storage file."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT path FROM receipts WHERE id = %s AND user_id = %s",
+            (receipt_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        path = row["path"]
+        cur.execute("DELETE FROM receipts WHERE id = %s", (receipt_id,))
+        return path
+
+
+def get_transaction_receipts(user_id: int, transaction_id: int) -> list[dict]:
+    """List receipts attached to a specific transaction."""
+    from app.storage import get_signed_url
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, transaction_id, path, mime, size, created_at
+            FROM receipts
+            WHERE transaction_id = %s AND user_id = %s
+            ORDER BY created_at DESC
+            """,
+            (transaction_id, user_id),
+        )
+        rows = cur.fetchall()
+        res = []
+        for r in rows:
+            d = dict(r)
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            d["signed_url"] = get_signed_url(d["path"])
+            res.append(d)
+        return res
+
+
+# ---------- Merchant Category Cache & Past Categorizations ----------
+
+def get_cached_merchant_category(normalized_merchant: str) -> Optional[str]:
+    """Get category for merchant from global cache."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT category FROM merchant_category_cache WHERE LOWER(normalized_merchant) = %s",
+            (normalized_merchant.lower().strip(),),
+        )
+        row = cur.fetchone()
+        return row["category"] if row else None
+
+
+def set_cached_merchant_category(normalized_merchant: str, category: str) -> None:
+    """Store category in merchant_category_cache."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO merchant_category_cache (normalized_merchant, category)
+            VALUES (%s, %s)
+            ON CONFLICT (normalized_merchant) DO UPDATE SET category = EXCLUDED.category
+            """,
+            (normalized_merchant.lower().strip(), category.strip()),
+        )
+
+
+def get_past_merchant_category(user_id: int, normalized_merchant: str) -> Optional[str]:
+    """Check user's past transactions for a matching merchant or note."""
+    norm = normalized_merchant.lower().strip()
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT category FROM transactions
+            WHERE user_id = %s AND (
+                LOWER(COALESCE(merchant, '')) = %s
+                OR LOWER(COALESCE(note, '')) LIKE %s
+            )
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+            (user_id, norm, f"%{norm}%"),
+        )
+        row = cur.fetchone()
+        return row["category"] if row else None
+
+
+# ---------- Udhar Reminder Nudge ----------
+
+def get_udhar_reminder_data(user_id: int, person_key: str) -> dict:
+    """Generate a polite, deterministic reminder message for an udhar entry.
+    No LLM call. No emojis anywhere."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT person_name, kind, amount, due_date
+            FROM udhar_entries
+            WHERE user_id = %s AND person_key = %s
+            ORDER BY entry_date DESC
+            """,
+            (user_id, person_key.lower().strip()),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        raise ValueError(f"No udhar records found for '{person_key}'.")
+
+    person_name = rows[0]["person_name"]
+    lent_total = sum(float(r["amount"]) for r in rows if r["kind"] == "lent")
+    borrowed_total = sum(float(r["amount"]) for r in rows if r["kind"] == "borrowed")
+    net_balance = lent_total - borrowed_total
+
+    # Find earliest or latest due date for lent entries
+    due_dates = [r["due_date"] for r in rows if r["kind"] == "lent" and r["due_date"]]
+    due_date_str = ""
+    if due_dates:
+        latest_due = max(due_dates)
+        if hasattr(latest_due, "strftime"):
+            due_date_str = latest_due.strftime("%d %b %Y")
+        else:
+            due_date_str = str(latest_due)
+
+    if net_balance <= 0:
+        msg = f"Hi {person_name}, according to our records, all pending dues are settled. Thank you."
+    elif due_date_str:
+        msg = f"Hi {person_name}, gentle reminder regarding the pending amount of Rs {net_balance:.0f} which was due on {due_date_str}. Please let me know once settled. Thank you."
+    else:
+        msg = f"Hi {person_name}, gentle reminder regarding the pending balance of Rs {net_balance:.0f}. Please let me know once settled. Thank you."
+
+    import urllib.parse
+    wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
+
+    return {
+        "person_name": person_name,
+        "person_key": person_key,
+        "net_balance": net_balance,
+        "due_date": due_date_str,
+        "message": msg,
+        "wa_url": wa_url,
+    }
+
+
+# ---------- Cash-Flow Calendar ----------
+
+def get_cashflow_calendar(user_id: int, month_str: Optional[str] = None) -> dict:
+    """Generate calendar events and projected daily cash flow for a given month (YYYY-MM).
+    Shows recurring bills, udhar due dates, and expected income.
+    Works seamlessly on mobile and desktop."""
+    if not month_str:
+        month_str = current_month()
+
+    try:
+        year, month = map(int, month_str.split("-"))
+    except ValueError:
+        month_str = current_month()
+        year, month = map(int, month_str.split("-"))
+
+    num_days = calendar.monthrange(year, month)[1]
+
+    # Initialize daily schedule
+    days_data = {
+        d: {
+            "day": d,
+            "date": f"{year:04d}-{month:02d}-{d:02d}",
+            "bills": [],
+            "udhar": [],
+            "income": [],
+            "net_flow": 0.0,
+            "projected_balance": 0.0,
+        }
+        for d in range(1, num_days + 1)
+    }
+
+    total_bills = 0.0
+    total_receivable = 0.0
+    total_payable = 0.0
+    total_income = 0.0
+
+    # 1. Recurring bills
+    recurring = get_recurring_expenses(user_id)
+    for r in recurring:
+        if not r.get("active"):
+            continue
+        amt = float(r["amount"])
+        freq = r.get("frequency", "monthly")
+        due = r.get("next_due_date")
+        if not due:
+            continue
+        if isinstance(due, str):
+            try:
+                due_d = datetime.strptime(due[:10], "%Y-%m-%d").date()
+            except Exception:
+                due_d = date.today()
+        else:
+            due_d = due
+
+        # Project occurrences in this month
+        if freq == "monthly":
+            day = min(due_d.day, num_days)
+            item = {
+                "id": r["id"],
+                "name": r["name"],
+                "amount": amt,
+                "category": r["category"],
+                "type": "bill",
+            }
+            days_data[day]["bills"].append(item)
+            days_data[day]["net_flow"] -= amt
+            total_bills += amt
+        elif freq == "weekly":
+            target_weekday = due_d.weekday()
+            for d in range(1, num_days + 1):
+                cur_d = date(year, month, d)
+                if cur_d.weekday() == target_weekday:
+                    item = {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "amount": amt,
+                        "category": r["category"],
+                        "type": "bill",
+                    }
+                    days_data[d]["bills"].append(item)
+                    days_data[d]["net_flow"] -= amt
+                    total_bills += amt
+        elif freq == "yearly":
+            if due_d.month == month:
+                day = min(due_d.day, num_days)
+                item = {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "amount": amt,
+                    "category": r["category"],
+                    "type": "bill",
+                }
+                days_data[day]["bills"].append(item)
+                days_data[day]["net_flow"] -= amt
+                total_bills += amt
+
+    # 2. Udhar entries with due dates in this month
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, person_name, kind, amount, note, due_date
+            FROM udhar_entries
+            WHERE user_id = %s
+              AND due_date IS NOT NULL
+              AND TO_CHAR(due_date, 'YYYY-MM') = %s
+            """,
+            (user_id, month_str),
+        )
+        udhar_rows = cur.fetchall()
+
+    for u in udhar_rows:
+        amt = float(u["amount"])
+        due_d = u["due_date"]
+        if hasattr(due_d, "day"):
+            day = due_d.day
+        else:
+            day = int(str(due_d)[8:10])
+
+        if 1 <= day <= num_days:
+            item = {
+                "id": u["id"],
+                "person_name": u["person_name"],
+                "amount": amt,
+                "kind": u["kind"],
+                "note": u["note"],
+                "type": "udhar",
+            }
+            days_data[day]["udhar"].append(item)
+            if u["kind"] == "lent":
+                days_data[day]["net_flow"] += amt
+                total_receivable += amt
+            else:
+                days_data[day]["net_flow"] -= amt
+                total_payable += amt
+
+    # 3. Expected Income entries in this month
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, source, amount, date
+            FROM income_entries
+            WHERE user_id = %s AND TO_CHAR(date, 'YYYY-MM') = %s
+            """,
+            (user_id, month_str),
+        )
+        inc_rows = cur.fetchall()
+
+    for inc in inc_rows:
+        amt = float(inc["amount"])
+        dt = inc["date"]
+        day = dt.day if hasattr(dt, "day") else int(str(dt)[8:10])
+        if 1 <= day <= num_days:
+            item = {
+                "id": inc["id"],
+                "source": inc["source"],
+                "amount": amt,
+                "type": "income",
+            }
+            days_data[day]["income"].append(item)
+            days_data[day]["net_flow"] += amt
+            total_income += amt
+
+    # 4. Running projected balance line
+    profile = get_user_profile(user_id)
+    running_balance = float(profile.get("current_savings") or 0.0)
+
+    for d in range(1, num_days + 1):
+        running_balance += days_data[d]["net_flow"]
+        days_data[d]["projected_balance"] = round(running_balance, 2)
+
+    return {
+        "month": month_str,
+        "year": year,
+        "days_in_month": num_days,
+        "days": days_data,
+        "summary": {
+            "total_bills": round(total_bills, 2),
+            "total_receivable": round(total_receivable, 2),
+            "total_payable": round(total_payable, 2),
+            "total_income": round(total_income, 2),
+            "start_balance": round(float(profile.get("current_savings") or 0.0), 2),
+            "end_balance": round(running_balance, 2),
+        },
+    }
+
+
+# ---------- Overspending Projections ----------
+
+def get_overspending_projections(user_id: int) -> list[dict]:
+    """Calculate projected month-end spend per category.
+    Formula: projected = spent / days_elapsed * days_in_month
+    Only shows warning when projected > budget AND days_elapsed >= 7."""
+    today = date.today()
+    days_elapsed = max(1, today.day)
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+
+    # Condition: at least 7 days of data must exist
+    if days_elapsed < 7:
+        return []
+
+    budgets = get_budgets(user_id)
+    if not budgets:
+        return []
+
+    spend_map = spend_by_category(user_id, current_month())
+    alerts = []
+
+    for b in budgets:
+        cat = b["category"]
+        limit = float(b["monthly_limit"])
+        spent = float(spend_map.get(cat, 0.0))
+
+        if limit <= 0:
+            continue
+
+        projected = (spent / days_elapsed) * days_in_month
+        if projected > limit:
+            excess = round(projected - limit)
+            alerts.append({
+                "category": cat,
+                "limit": limit,
+                "spent": spent,
+                "projected": round(projected),
+                "excess": excess,
+                "days_elapsed": days_elapsed,
+                "days_in_month": days_in_month,
+                "message": f"At this pace you will exceed {cat} by about Rs {excess}.",
+            })
+
+    return alerts
+
+
+def get_overspending_projections_text(user_id: int) -> str:
+    """Formatted deterministic text for agent tool."""
+    today = date.today()
+    days_elapsed = max(1, today.day)
+
+    if days_elapsed < 7:
+        return f"Only {days_elapsed} days have elapsed this month. Overspending projections require at least 7 days of data."
+
+    alerts = get_overspending_projections(user_id)
+    if not alerts:
+        return "You are currently within your budget limits for all categories based on current spending pace."
+
+    lines = ["Budget Pace Alerts:"]
+    for a in alerts:
+        lines.append(f"- {a['message']} (Limit: Rs {a['limit']:.0f}, Spent: Rs {a['spent']:.0f}, Projected: Rs {a['projected']:.0f})")
+    return "\n".join(lines)
+
+
+# ---------- Push Subscriptions & Sent Notifications ----------
+
+def save_push_subscription(
+    user_id: int,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+    preferences: Optional[dict] = None,
+) -> dict:
+    """Save or update browser push subscription."""
+    import json
+    prefs_json = json.dumps(preferences or {
+        "budget_alerts": True,
+        "bill_reminders": True,
+        "weekly_recap": True,
+    })
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, preferences)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (endpoint) DO UPDATE
+            SET user_id = EXCLUDED.user_id,
+                p256dh = EXCLUDED.p256dh,
+                auth = EXCLUDED.auth,
+                preferences = EXCLUDED.preferences
+            RETURNING id, user_id, endpoint, preferences, created_at
+            """,
+            (user_id, endpoint, p256dh, auth, prefs_json),
+        )
+        row = cur.fetchone()
+        d = dict(row)
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        return d
+
+
+def get_user_push_subscriptions(user_id: int) -> list[dict]:
+    """Get all push subscriptions for a user."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, endpoint, p256dh, auth, preferences, created_at
+            FROM push_subscriptions
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            result.append(d)
+        return result
+
+
+def remove_push_subscription(endpoint: str) -> bool:
+    """Remove a subscription by endpoint (e.g. on 404/410 gone)."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM push_subscriptions WHERE endpoint = %s", (endpoint,))
+        return cur.rowcount > 0
+
+
+def check_and_record_notification(user_id: int, notification_type: str, cycle: str) -> bool:
+    """Check if notification has already been sent for this cycle.
+    If not sent yet, records it and returns True (proceed with sending).
+    If already sent, returns False (suppress duplicate)."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sent_notifications (user_id, notification_type, cycle)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, notification_type, cycle) DO NOTHING
+            RETURNING id
+            """,
+            (user_id, notification_type, cycle),
+        )
+        row = cur.fetchone()
+        return row is not None
+
+
+# ---------- User Password & Account Management ----------
+
+def update_user_password(user_id: int, password_hash: str) -> bool:
+    """Update user's password hash and clear force_password_reset flag."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+            SET password_hash = %s, force_password_reset = FALSE
+            WHERE id = %s
+            """,
+            (password_hash, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def update_user_last_login(user_id: int) -> None:
+    """Record the user's latest login timestamp."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("UPDATE users SET last_login_at = NOW() WHERE id = %s", (user_id,))
+    except Exception:
+        pass
+
+
+def set_user_suspended(user_id: int, suspended: bool) -> bool:
+    """Suspend or unsuspend a user account."""
+    with get_db_cursor() as cur:
+        if suspended:
+            cur.execute("UPDATE users SET suspended_at = NOW() WHERE id = %s", (user_id,))
+        else:
+            cur.execute("UPDATE users SET suspended_at = NULL WHERE id = %s", (user_id,))
+        return cur.rowcount > 0
+
+
+def set_user_force_password_reset(user_id: int, force: bool = True) -> bool:
+    """Set or clear the force_password_reset flag on a user account."""
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE users SET force_password_reset = %s WHERE id = %s", (force, user_id))
+        return cur.rowcount > 0
+
+
+# ---------- Server Errors Logging ----------
+
+def log_server_error(route: str, message: str) -> None:
+    """Log an unhandled server error (never contains user data)."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO errors (route, message) VALUES (%s, %s)",
+                (route[:500], message[:2000]),
+            )
+    except Exception:
+        pass
+
+
+def get_recent_server_errors(limit: int = 10) -> list[dict]:
+    """Fetch recent server errors (up to limit)."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            "SELECT id, route, message, created_at FROM errors ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            result.append(d)
+        return result
+
+
+# ---------- App Settings (Live Config with 30s TTL Cache) ----------
+
+_app_settings_cache: dict[str, str] = {}
+_app_settings_cache_time: float = 0.0
+
+
+def get_app_settings(force_refresh: bool = False) -> dict[str, str]:
+    """Fetch all live app settings with a 30-second in-memory cache."""
+    global _app_settings_cache, _app_settings_cache_time
+    now = time.time()
+    if not force_refresh and _app_settings_cache and (now - _app_settings_cache_time < 30.0):
+        return dict(_app_settings_cache)
+
+    defaults = {
+        "daily_message_cap": "100",
+        "maintenance_mode": "false",
+        "push_notifications_enabled": "true",
+        "csv_import_enabled": "true",
+        "receipt_upload_enabled": "true",
+    }
+    with get_db_cursor() as cur:
+        cur.execute("SELECT key, value FROM app_settings")
+        rows = cur.fetchall()
+        data = {r["key"]: r["value"] for r in rows}
+        for k, v in defaults.items():
+            if k not in data:
+                data[k] = v
+        _app_settings_cache = data
+        _app_settings_cache_time = now
+        return dict(data)
+
+
+def set_app_setting(key: str, value: str) -> None:
+    """Upsert an app setting and update cache."""
+    global _app_settings_cache, _app_settings_cache_time
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = NOW()
+            """,
+            (key, str(value)),
+        )
+    _app_settings_cache[key] = str(value)
+    _app_settings_cache_time = time.time()
+
+
+def get_app_setting(key: str, default: str = "") -> str:
+    """Helper to fetch a single live setting."""
+    s = get_app_settings()
+    return s.get(key, default)
+
+
+def get_user_today_message_count(user_id: int) -> int:
+    """Count user messages sent today for daily message cap."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM chat_messages
+            WHERE user_id = %s
+              AND role = 'user'
+              AND created_at >= CURRENT_DATE
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row["cnt"] if row else 0
+
+
+# ---------- Admin Panel Data Access ----------
+
+def get_admin_dashboard_stats() -> dict:
+    """Aggregate statistics for admin dashboard overview."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS count FROM users")
+        total_users = cur.fetchone()["count"]
+
+        cur.execute("""
+            SELECT COUNT(*) AS count FROM users
+            WHERE (last_login_at >= NOW() - INTERVAL '7 days')
+               OR (last_login_at IS NULL AND created_at >= NOW() - INTERVAL '7 days')
+        """)
+        active_7d = cur.fetchone()["count"]
+
+        cur.execute("""
+            SELECT COUNT(*) AS count FROM users
+            WHERE (last_login_at >= NOW() - INTERVAL '30 days')
+               OR (last_login_at IS NULL AND created_at >= NOW() - INTERVAL '30 days')
+        """)
+        active_30d = cur.fetchone()["count"]
+
+        cur.execute("SELECT COUNT(*) AS count FROM transactions")
+        total_tx = cur.fetchone()["count"]
+
+        cur.execute("SELECT COUNT(*) AS count FROM udhar_entries")
+        total_udhar = cur.fetchone()["count"]
+
+        cur.execute("SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS total_bytes FROM receipts")
+        rec_row = cur.fetchone()
+        total_receipts = rec_row["count"]
+        total_storage_bytes = int(rec_row["total_bytes"])
+
+        # 30-day registration trend
+        cur.execute("""
+            SELECT d::date AS date, COALESCE(COUNT(u.id), 0) AS count
+            FROM generate_series(CURRENT_DATE - INTERVAL '29 days', CURRENT_DATE, '1 day'::interval) d
+            LEFT JOIN users u ON u.created_at::date = d::date
+            GROUP BY d::date
+            ORDER BY d::date ASC
+        """)
+        trend_rows = cur.fetchall()
+        reg_trend = [{"date": str(r["date"]), "count": int(r["count"])} for r in trend_rows]
+
+    return {
+        "total_users": total_users,
+        "active_users_7d": active_7d,
+        "active_users_30d": active_30d,
+        "total_transactions": total_tx,
+        "total_udhar": total_udhar,
+        "total_receipts": total_receipts,
+        "total_storage_bytes": total_storage_bytes,
+        "registration_trend": reg_trend,
+    }
+
+
+def get_admin_users(
+    search: str = "",
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 25,
+) -> dict:
+    """Paginated, searchable, sortable users list for admin."""
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    offset = (page - 1) * page_size
+
+    allowed_sorts = {
+        "created_at": "u.created_at",
+        "last_login": "u.last_login_at",
+        "transactions": "tx_count",
+        "username": "u.username",
+        "email": "u.email",
+    }
+    sort_column = allowed_sorts.get(sort_by, "u.created_at")
+    order_dir = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+
+    where_clause = ""
+    params: list[Any] = []
+    if search.strip():
+        s = f"%{search.strip().lower()}%"
+        where_clause = "WHERE LOWER(u.email) LIKE %s OR LOWER(COALESCE(u.username, '')) LIKE %s"
+        params.extend([s, s])
+
+    with get_db_cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS total FROM users u {where_clause}", tuple(params))
+        total = cur.fetchone()["total"]
+
+        query = f"""
+            SELECT
+                u.id,
+                u.email,
+                u.username,
+                u.created_at,
+                u.last_login_at,
+                u.suspended_at,
+                u.force_password_reset,
+                (SELECT COUNT(*) FROM transactions WHERE user_id = u.id) AS tx_count,
+                (SELECT COUNT(*) FROM udhar_entries WHERE user_id = u.id) AS udhar_count
+            FROM users u
+            {where_clause}
+            ORDER BY {sort_column} {order_dir} NULLS LAST
+            LIMIT %s OFFSET %s
+        """
+        cur.execute(query, tuple(params + [page_size, offset]))
+        rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            raw_id = str(r["id"])
+            masked_id = f"...{raw_id[-6:]}" if len(raw_id) > 6 else f"...{raw_id}"
+            items.append({
+                "id": r["id"],
+                "masked_id": masked_id,
+                "username": r["username"] or "",
+                "email": r["email"],
+                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"]),
+                "last_login": r["last_login_at"].isoformat() if hasattr(r.get("last_login_at"), "isoformat") else (str(r["last_login_at"]) if r.get("last_login_at") else None),
+                "tx_count": int(r["tx_count"]),
+                "udhar_count": int(r["udhar_count"]),
+                "status": "Suspended" if r.get("suspended_at") else "Active",
+                "suspended_at": r["suspended_at"].isoformat() if hasattr(r.get("suspended_at"), "isoformat") else (str(r["suspended_at"]) if r.get("suspended_at") else None),
+                "force_password_reset": bool(r.get("force_password_reset")),
+            })
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "users": items,
+    }
+
+
+def get_admin_user_detail(user_id: int) -> dict | None:
+    """Fetch user detail for admin view (no raw notes or chat messages for privacy)."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, email, username, created_at, last_login_at, suspended_at, force_password_reset
+            FROM users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+        u = cur.fetchone()
+        if not u:
+            return None
+        user_data = dict(u)
+        for k in ("created_at", "last_login_at", "suspended_at"):
+            if hasattr(user_data.get(k), "isoformat"):
+                user_data[k] = user_data[k].isoformat()
+
+        # Budgets
+        cur.execute(
+            "SELECT category, monthly_limit, rollover_enabled FROM budgets WHERE user_id = %s ORDER BY category",
+            (user_id,),
+        )
+        budgets = [dict(b) for b in cur.fetchall()]
+        for b in budgets:
+            b["monthly_limit"] = float(b["monthly_limit"])
+
+        # Recent transactions: amounts and categories only, NO notes or raw_messages for privacy
+        cur.execute(
+            """
+            SELECT id, date, amount, category, merchant
+            FROM transactions
+            WHERE user_id = %s
+            ORDER BY date DESC
+            LIMIT 25
+            """,
+            (user_id,),
+        )
+        tx_rows = cur.fetchall()
+        txs = []
+        for t in tx_rows:
+            d = dict(t)
+            d["amount"] = float(d["amount"])
+            if hasattr(d.get("date"), "isoformat"):
+                d["date"] = d["date"].isoformat()
+            txs.append(d)
+
+        # Storage used
+        cur.execute(
+            "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS total_bytes FROM receipts WHERE user_id = %s",
+            (user_id,),
+        )
+        rec = cur.fetchone()
+        storage_info = {
+            "receipt_count": rec["count"],
+            "total_bytes": int(rec["total_bytes"]),
+        }
+
+    # Udhar summary
+    udhar = get_udhar_summary(user_id=user_id)
+
+    return {
+        "user": user_data,
+        "budgets": budgets,
+        "recent_transactions": txs,
+        "udhar_summary": udhar,
+        "storage": storage_info,
+    }
+
+
+def get_admin_llm_usage() -> dict:
+    """30-day message counts (total and per user, no content) and top 5 users."""
+    with get_db_cursor() as cur:
+        cur.execute("""
+            SELECT d::date AS date,
+                   COUNT(m.id) AS total_messages,
+                   COUNT(DISTINCT m.user_id) AS active_users
+            FROM generate_series(CURRENT_DATE - INTERVAL '29 days', CURRENT_DATE, '1 day'::interval) d
+            LEFT JOIN chat_messages m ON m.created_at::date = d::date AND m.role = 'user'
+            GROUP BY d::date
+            ORDER BY d::date ASC
+        """)
+        daily_rows = cur.fetchall()
+        daily_usage = [
+            {
+                "date": str(r["date"]),
+                "total_messages": int(r["total_messages"]),
+                "active_users": int(r["active_users"]),
+            }
+            for r in daily_rows
+        ]
+
+        cur.execute("""
+            SELECT user_id, COUNT(*) AS message_count
+            FROM chat_messages
+            WHERE role = 'user'
+              AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
+            GROUP BY user_id
+            ORDER BY message_count DESC
+            LIMIT 5
+        """)
+        top_rows = cur.fetchall()
+        top_users = []
+        for r in top_rows:
+            uid = str(r["user_id"])
+            masked = f"...{uid[-6:]}" if len(uid) > 6 else f"...{uid}"
+            top_users.append({
+                "masked_user_id": masked,
+                "message_count": int(r["message_count"]),
+            })
+
+    return {
+        "daily_usage": daily_usage,
+        "top_users": top_users,
+    }
+
+
+ADMIN_EXPLORER_TABLES = [
+    "users",
+    "transactions",
+    "budgets",
+    "udhar_entries",
+    "recurring_expenses",
+    "savings_goals",
+    "receipts",
+]
+
+
+def get_admin_table_overview() -> list[dict]:
+    """Return row counts for all DB explorer tables."""
+    overview = []
+    with get_db_cursor() as cur:
+        for tbl in ADMIN_EXPLORER_TABLES:
+            cur.execute(f"SELECT COUNT(*) AS cnt FROM {tbl}")
+            cnt = cur.fetchone()["cnt"]
+            overview.append({"table": tbl, "row_count": cnt})
+    return overview
+
+
+def get_admin_table_rows(
+    table_name: str,
+    search: str = "",
+    page: int = 1,
+    page_size: int = 25,
+) -> dict:
+    """Paginated, searchable rows for a selected database table (read-only)."""
+    if table_name not in ADMIN_EXPLORER_TABLES:
+        raise ValueError(f"Table '{table_name}' is not accessible in database explorer")
+
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    offset = (page - 1) * page_size
+
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = 'public'
+            ORDER BY ordinal_position
+            """,
+            (table_name,),
+        )
+        cols_info = cur.fetchall()
+        columns = [c["column_name"] for c in cols_info]
+        text_columns = [
+            c["column_name"]
+            for c in cols_info
+            if c["data_type"] in ("character varying", "text", "character")
+        ]
+
+        where_sql = ""
+        params: list[Any] = []
+        if search.strip() and text_columns:
+            s = f"%{search.strip().lower()}%"
+            clauses = [f"LOWER({tc}) LIKE %s" for tc in text_columns]
+            where_sql = "WHERE " + " OR ".join(clauses)
+            params = [s] * len(text_columns)
+
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM {table_name} {where_sql}", tuple(params))
+        total = cur.fetchone()["cnt"]
+
+        order_col = "id" if "id" in columns else columns[0]
+        cur.execute(
+            f"SELECT * FROM {table_name} {where_sql} ORDER BY {order_col} DESC LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]),
+        )
+        rows = cur.fetchall()
+        clean_rows = []
+        for r in rows:
+            row_dict = {}
+            for k, v in dict(r).items():
+                if k == "password_hash":
+                    row_dict[k] = "[REDACTED_BCRYPT_HASH]"
+                elif hasattr(v, "isoformat"):
+                    row_dict[k] = v.isoformat()
+                elif isinstance(v, (int, float, bool, str)) or v is None:
+                    row_dict[k] = v
+                else:
+                    row_dict[k] = str(v)
+            clean_rows.append(row_dict)
+
+    return {
+        "table": table_name,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "columns": columns,
+        "rows": clean_rows,
+    }
+
+

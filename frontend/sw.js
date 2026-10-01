@@ -63,3 +63,47 @@ self.addEventListener('fetch', (e) => {
       .catch(() => caches.match(e.request))
   );
 });
+
+// --- Web Push Notifications ---
+self.addEventListener('push', (e) => {
+  let data = { title: 'Budget Tracker Alert', body: 'New notification', url: '/' };
+  try {
+    if (e.data) {
+      data = e.data.json();
+    }
+  } catch (err) {
+    if (e.data) data.body = e.data.text();
+  }
+
+  const options = {
+    body: data.body,
+    icon: '/static/icon-192.png',
+    badge: '/static/favicon.png',
+    data: { url: data.url || '/' },
+    tag: data.tag || 'budget-notification',
+    renotify: true,
+  };
+
+  e.waitUntil(self.registration.showNotification(data.title, options));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const targetUrl = e.notification.data?.url || '/';
+
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          if (targetUrl && client.navigate) {
+            client.navigate(targetUrl);
+          }
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
+});

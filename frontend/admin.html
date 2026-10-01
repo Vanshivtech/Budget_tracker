@@ -1,0 +1,1667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ABT Admin Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #0a0d14;
+      --bg-surface: #101522;
+      --bg-card: #151b2b;
+      --bg-card-hover: #1b2337;
+      --border-subtle: #212a3e;
+      --border-strong: #2f3b55;
+      
+      --accent: #f59e0b;
+      --accent-hover: #d97706;
+      --accent-dim: rgba(245, 158, 11, 0.15);
+      --accent-glow: rgba(245, 158, 11, 0.25);
+      
+      --danger: #ef4444;
+      --danger-dim: rgba(239, 68, 68, 0.15);
+      --success: #10b981;
+      --success-dim: rgba(16, 185, 129, 0.15);
+      --warning: #f59e0b;
+      
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.4);
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---------- Typography & Utility ---------- */
+    h1, h2, h3, h4 { font-weight: 600; color: var(--text-main); }
+    p { color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+    .mono { font-family: var(--font-mono); }
+    .hidden { display: none !important; }
+
+    /* ---------- Buttons ---------- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+      text-decoration: none;
+      user-select: none;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+      font-weight: 600;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn-secondary {
+      background: var(--bg-surface);
+      color: var(--text-main);
+      border-color: var(--border-subtle);
+    }
+    .btn-secondary:hover { background: var(--bg-card); border-color: var(--border-strong); }
+    .btn-danger {
+      background: var(--danger-dim);
+      color: var(--danger);
+      border-color: rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ---------- Form Controls ---------- */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .form-group label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .input {
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+      color: var(--text-main);
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .input:focus { border-color: var(--accent); }
+    .select {
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      color: var(--text-main);
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+    }
+    .select:focus { border-color: var(--accent); }
+
+    /* ---------- Badges ---------- */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 9999px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .badge-amber { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-success { background: var(--success-dim); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-danger { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-neutral { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.25); }
+
+    /* ---------- Alerts ---------- */
+    .alert {
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      line-height: 1.4;
+      margin-bottom: 14px;
+    }
+    .alert-danger { background: var(--danger-dim); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .alert-success { background: var(--success-dim); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .alert-warning { background: var(--accent-dim); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }
+
+    /* ---------- Login View ---------- */
+    #admin-login-view {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .login-box {
+      width: 100%;
+      max-width: 400px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 32px 28px;
+      box-shadow: var(--shadow-md);
+    }
+    .login-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .login-header h1 {
+      font-size: 20px;
+      margin-top: 10px;
+      letter-spacing: -0.3px;
+    }
+    .login-header p {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    /* ---------- Admin Navbar ---------- */
+    .admin-navbar {
+      height: 60px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--text-main);
+    }
+    .navbar-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .nav-tab {
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .nav-tab:hover { color: var(--text-main); background: var(--bg-card); }
+    .nav-tab.active {
+      color: var(--accent);
+      background: var(--accent-dim);
+      font-weight: 600;
+    }
+    .navbar-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .admin-email-tag {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* ---------- Admin Main Content ---------- */
+    .admin-content {
+      flex: 1;
+      padding: 28px;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .panel-header {
+      margin-bottom: 22px;
+    }
+    .panel-header h2 {
+      font-size: 20px;
+      letter-spacing: -0.3px;
+    }
+    .panel-header p {
+      font-size: 13px;
+      margin-top: 3px;
+    }
+
+    /* ---------- KPI Cards Grid ---------- */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .kpi-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .kpi-title {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 500;
+    }
+    .kpi-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-main);
+      letter-spacing: -0.5px;
+    }
+    .kpi-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ---------- Cards & Panels ---------- */
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    /* ---------- Tables ---------- */
+    .table-container {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+    table.data-table th {
+      background: var(--bg-card);
+      color: var(--text-dim);
+      font-weight: 600;
+      padding: 10px 14px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border-subtle);
+      white-space: nowrap;
+    }
+    table.data-table td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      white-space: nowrap;
+    }
+    table.data-table tr:last-child td { border-bottom: none; }
+    table.data-table tr:hover td { background: var(--bg-card); }
+
+    /* ---------- Pagination ---------- */
+    .pagination-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 14px;
+      padding: 8px 4px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .pagination-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ---------- SVG Charts ---------- */
+    .chart-box {
+      width: 100%;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      position: relative;
+    }
+    .chart-box svg {
+      width: 100%;
+      height: 220px;
+      display: block;
+    }
+
+    /* ---------- Modal / Drawer ---------- */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .modal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      width: 100%;
+      max-width: 600px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: var(--shadow-md);
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+    }
+    .modal-close:hover { color: var(--text-main); }
+
+    /* ---------- Settings Switches ---------- */
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .switch-row:last-child { border-bottom: none; }
+    .switch-info h4 { font-size: 14px; font-weight: 500; }
+    .switch-info p { font-size: 12px; color: var(--text-dim); }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--border-strong);
+      transition: .2s;
+      border-radius: 24px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px; width: 18px;
+      left: 3px; bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    input:checked + .slider { background-color: var(--accent); }
+    input:checked + .slider:before { transform: translateX(20px); }
+  </style>
+</head>
+<body>
+
+  <!-- ==================== LOGIN VIEW ==================== -->
+  <div id="admin-login-view">
+    <div class="login-box">
+      <div class="login-header">
+        <span class="badge badge-amber">Admin Console</span>
+        <h1>Administrator Login</h1>
+        <p>Restricted access. Cryptographically separated admin portal.</p>
+      </div>
+
+      <div id="login-alert" class="alert alert-danger hidden"></div>
+
+      <form id="admin-login-form" onsubmit="return false;">
+        <div class="form-group">
+          <label for="admin-email">Admin Email</label>
+          <input type="email" id="admin-email" class="input" placeholder="admin@domain.com" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="admin-password">Admin Password</label>
+          <input type="password" id="admin-password" class="input" placeholder="Enter admin password" required autocomplete="current-password">
+        </div>
+        <button type="submit" id="btn-login-submit" class="btn btn-primary" style="width:100%;margin-top:8px;">Sign In to Console</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== PORTAL VIEW ==================== -->
+  <div id="admin-portal-view" class="hidden">
+    <!-- Navbar -->
+    <header class="admin-navbar">
+      <div class="navbar-brand">
+        <span class="brand-title">ABT</span>
+        <span class="badge badge-amber">ADMIN CONSOLE</span>
+      </div>
+      <nav class="navbar-tabs">
+        <button class="nav-tab active" data-tab="dashboard">Dashboard</button>
+        <button class="nav-tab" data-tab="users">Users</button>
+        <button class="nav-tab" data-tab="llm">LLM Usage</button>
+        <button class="nav-tab" data-tab="explorer">DB Explorer</button>
+        <button class="nav-tab" data-tab="settings">App Settings</button>
+      </nav>
+      <div class="navbar-right">
+        <span class="admin-email-tag mono" id="nav-admin-email">admin@budgettracker.local</span>
+        <button id="btn-admin-logout" class="btn btn-secondary btn-sm">Log Out</button>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="admin-content">
+
+      <!-- ==================== TAB 1: DASHBOARD ==================== -->
+      <section id="tab-dashboard" class="tab-panel">
+        <div class="panel-header">
+          <h2>Overview Dashboard</h2>
+          <p>System-wide activity, registration trajectory, key health, and server runtime logs</p>
+        </div>
+
+        <!-- KPI Grid -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-title">Total Users</span>
+            <span class="kpi-value" id="kpi-total-users">0</span>
+            <span class="kpi-sub" id="kpi-active-sub">0 active (30d)</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">Active (7 Days)</span>
+            <span class="kpi-value" id="kpi-active-7d">0</span>
+            <span class="kpi-sub">Recent logins</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">Total Transactions</span>
+            <span class="kpi-value" id="kpi-total-tx">0</span>
+            <span class="kpi-sub">Logged across all users</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">Udhar Records</span>
+            <span class="kpi-value" id="kpi-total-udhar">0</span>
+            <span class="kpi-sub">Lent / borrowed entries</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">Receipts Attached</span>
+            <span class="kpi-value" id="kpi-total-receipts">0</span>
+            <span class="kpi-sub">In Supabase Storage</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">Storage Used</span>
+            <span class="kpi-value" id="kpi-total-storage">0 KB</span>
+            <span class="kpi-sub">Private bucket</span>
+          </div>
+        </div>
+
+        <!-- 30-Day Registration Trend Chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">User Registration Trend (Last 30 Days)</span>
+            <span class="badge badge-neutral">New Accounts per Day</span>
+          </div>
+          <div class="chart-box" id="reg-chart-container">
+            <svg id="reg-trend-svg" viewBox="0 0 900 220" preserveAspectRatio="none">
+              <!-- Rendered via JS -->
+            </svg>
+          </div>
+        </div>
+
+        <!-- Two Column Layout: Key Pool & Recent Errors -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(420px, 1fr));gap:20px;">
+          <!-- LLM Key Pool Status -->
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-header">
+              <span class="card-title">LLM Key Pool Health</span>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-dashboard">Refresh</button>
+            </div>
+            <div class="table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Slot</th>
+                    <th>Provider</th>
+                    <th>Masked Key</th>
+                    <th>State</th>
+                    <th>Last Used</th>
+                  </tr>
+                </thead>
+                <tbody id="llm-pool-tbody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Recent Server Errors -->
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-header">
+              <span class="card-title">Recent Server Errors (Last 10)</span>
+              <span class="badge badge-neutral">No User Data Recorded</span>
+            </div>
+            <div class="table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Route</th>
+                    <th>Error Message</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="recent-errors-tbody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 2: USERS ==================== -->
+      <section id="tab-users" class="tab-panel hidden">
+        <div class="panel-header">
+          <h2>User Accounts</h2>
+          <p>Search, inspect financial structures, manage account suspension, and perform account actions</p>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="card" style="padding:14px;margin-bottom:16px;">
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;">
+            <div style="display:flex;gap:10px;flex:1;min-width:280px;max-width:500px;">
+              <input type="text" id="users-search-input" class="input" placeholder="Search by email or username..." style="flex:1;">
+              <button class="btn btn-primary" id="btn-search-users">Search</button>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <label style="font-size:12px;color:var(--text-dim);">Sort By:</label>
+              <select id="users-sort-by" class="select">
+                <option value="created_at">Joined Date</option>
+                <option value="last_login">Last Login</option>
+                <option value="transactions">Transaction Count</option>
+                <option value="email">Email</option>
+              </select>
+              <select id="users-sort-order" class="select">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="card">
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>User ID</th>
+                  <th>Username</th>
+                  <th>Email</th>
+                  <th>Joined Date</th>
+                  <th>Last Login</th>
+                  <th>Transactions</th>
+                  <th>Udhar</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="pagination-bar">
+            <span id="users-pagination-info">Showing 0-0 of 0 users</span>
+            <div class="pagination-controls">
+              <button class="btn btn-secondary btn-sm" id="btn-users-prev">Previous</button>
+              <span class="mono" id="users-page-indicator">Page 1</span>
+              <button class="btn btn-secondary btn-sm" id="btn-users-next">Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 3: LLM USAGE ==================== -->
+      <section id="tab-llm" class="tab-panel hidden">
+        <div class="panel-header">
+          <h2>LLM Usage & Activity</h2>
+          <p>30-day chat volume trends and high-frequency active accounts (strictly message counts only, no content)</p>
+        </div>
+
+        <!-- 30-Day Chat Activity Line Chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Daily Messages (Past 30 Days)</span>
+            <span class="badge badge-neutral" id="total-messages-30d">Total: 0 messages</span>
+          </div>
+          <div class="chart-box">
+            <svg id="llm-usage-svg" viewBox="0 0 900 220" preserveAspectRatio="none">
+              <!-- Rendered via JS -->
+            </svg>
+          </div>
+        </div>
+
+        <!-- Top Users this month -->
+        <div class="card" style="max-width:600px;">
+          <div class="card-header">
+            <span class="card-title">Top 5 Users by Message Count (This Month)</span>
+            <span class="badge badge-amber">Masked IDs</span>
+          </div>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>User ID (Masked)</th>
+                  <th>Messages This Month</th>
+                </tr>
+              </thead>
+              <tbody id="top-users-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 4: DB EXPLORER ==================== -->
+      <section id="tab-explorer" class="tab-panel hidden">
+        <div class="panel-header">
+          <h2>Database Explorer (Read-Only)</h2>
+          <p>Inspect database rows with column-level fidelity and search capabilities. Password hashes are redacted.</p>
+        </div>
+
+        <!-- Table selection pills -->
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;" id="explorer-table-selector">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Search bar & meta -->
+        <div class="card" style="padding:14px;margin-bottom:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="display:flex;gap:10px;flex:1;max-width:400px;">
+              <input type="text" id="explorer-search-input" class="input" placeholder="Search text fields..." style="flex:1;">
+              <button class="btn btn-primary btn-sm" id="btn-search-table">Search</button>
+            </div>
+            <div>
+              <span class="badge badge-amber" id="explorer-table-badge">Table: users (0 rows)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Table Data -->
+        <div class="card">
+          <div class="table-container" style="max-height:600px;overflow:auto;">
+            <table class="data-table" id="explorer-data-table">
+              <thead id="explorer-thead"></thead>
+              <tbody id="explorer-tbody"></tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="pagination-bar">
+            <span id="explorer-pagination-info">Showing 0-0 of 0 rows</span>
+            <div class="pagination-controls">
+              <button class="btn btn-secondary btn-sm" id="btn-table-prev">Previous</button>
+              <span class="mono" id="explorer-page-indicator">Page 1</span>
+              <button class="btn btn-secondary btn-sm" id="btn-table-next">Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 5: APP SETTINGS ==================== -->
+      <section id="tab-settings" class="tab-panel hidden">
+        <div class="panel-header">
+          <h2>Live Application Settings</h2>
+          <p>Dynamic configuration and feature switches applied immediately with zero redeploy</p>
+        </div>
+
+        <div id="settings-save-alert" class="alert alert-success hidden">Settings saved successfully.</div>
+
+        <div class="card" style="max-width:700px;">
+          <!-- Daily message cap -->
+          <div class="switch-row">
+            <div class="switch-info">
+              <h4>Global Daily Message Cap</h4>
+              <p>Maximum user chat messages allowed per calendar day per user</p>
+            </div>
+            <div style="width:120px;">
+              <input type="number" id="setting-msg-cap" class="input" min="10" max="1000" value="100">
+            </div>
+          </div>
+
+          <!-- Maintenance Mode -->
+          <div class="switch-row">
+            <div class="switch-info">
+              <h4>Maintenance Mode</h4>
+              <p>Display maintenance advisory banner across all client surfaces</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-maintenance">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- Push Notifications Feature Flag -->
+          <div class="switch-row">
+            <div class="switch-info">
+              <h4>Web Push Notifications Feature</h4>
+              <p>Allow users to subscribe and receive web push reminders</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-flag-push" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- CSV Import Feature Flag -->
+          <div class="switch-row">
+            <div class="switch-info">
+              <h4>Bank Statement & CSV Import Feature</h4>
+              <p>Allow statement uploads, SMS parsing, and batch import</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-flag-import" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- Receipt Upload Feature Flag -->
+          <div class="switch-row">
+            <div class="switch-info">
+              <h4>Receipt & Bill Attachment Feature</h4>
+              <p>Allow image and PDF bill uploads to private Supabase Storage</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-flag-receipts" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div style="margin-top:20px;display:flex;justify-content:flex-end;">
+            <button class="btn btn-primary" id="btn-save-settings">Save Live Settings</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ==================== USER DETAIL MODAL ==================== -->
+  <div id="modal-user-detail" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width:750px;">
+      <div class="modal-header">
+        <div>
+          <h3 id="detail-user-email">User Financial Overview</h3>
+          <p class="mono" id="detail-user-id" style="font-size:12px;color:var(--text-dim);"></p>
+        </div>
+        <button class="modal-close" id="btn-close-user-detail">&times;</button>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:20px;">
+        <!-- Meta Row -->
+        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:12px;background:var(--bg-base);padding:12px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;">Joined Date</div>
+            <div id="detail-created" style="font-size:13px;font-weight:600;margin-top:2px;">-</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;">Last Login</div>
+            <div id="detail-last-login" style="font-size:13px;font-weight:600;margin-top:2px;">-</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;">Storage Usage</div>
+            <div id="detail-storage" style="font-size:13px;font-weight:600;margin-top:2px;">-</div>
+          </div>
+        </div>
+
+        <!-- Udhar Summary -->
+        <div>
+          <h4 style="font-size:13px;margin-bottom:8px;text-transform:uppercase;color:var(--text-dim);">Udhar Balance Summary</h4>
+          <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;">
+            <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+              <span style="font-size:11px;color:var(--text-dim);">Lent Total</span>
+              <div id="detail-lent" style="font-weight:700;font-size:15px;color:var(--success);margin-top:2px;">Rs 0</div>
+            </div>
+            <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+              <span style="font-size:11px;color:var(--text-dim);">Borrowed Total</span>
+              <div id="detail-borrowed" style="font-weight:700;font-size:15px;color:var(--danger);margin-top:2px;">Rs 0</div>
+            </div>
+            <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+              <span style="font-size:11px;color:var(--text-dim);">Net Position</span>
+              <div id="detail-net" style="font-weight:700;font-size:15px;margin-top:2px;">Rs 0</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Category Budgets -->
+        <div>
+          <h4 style="font-size:13px;margin-bottom:8px;text-transform:uppercase;color:var(--text-dim);">Configured Budgets</h4>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr><th>Category</th><th>Monthly Limit</th><th>Rollover</th></tr>
+              </thead>
+              <tbody id="detail-budgets-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Recent Transactions -->
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h4 style="font-size:13px;text-transform:uppercase;color:var(--text-dim);">Recent Transactions (Amounts & Categories Only)</h4>
+            <span class="badge badge-neutral">No Private Notes Stored</span>
+          </div>
+          <div class="table-container" style="max-height:220px;overflow:auto;">
+            <table class="data-table">
+              <thead>
+                <tr><th>Date</th><th>Amount</th><th>Category</th><th>Merchant</th></tr>
+              </thead>
+              <tbody id="detail-tx-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== DELETE USER CONFIRMATION MODAL ==================== -->
+  <div id="modal-delete-user" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width:480px;">
+      <div class="modal-header">
+        <h3 style="color:var(--danger);">Delete User Account</h3>
+        <button class="modal-close" id="btn-close-delete-modal">&times;</button>
+      </div>
+      <p style="margin-bottom:14px;">This will permanently wipe the user account, all transactions, budgets, udhar entries, and attached receipts from Supabase Storage.</p>
+      <div class="alert alert-danger">
+        Target Account: <strong id="delete-target-email"></strong>
+      </div>
+      <div class="form-group">
+        <label>Type user's full email address to confirm deletion:</label>
+        <input type="text" id="delete-confirm-email-input" class="input" placeholder="Type user email here">
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+        <button class="btn btn-secondary" id="btn-cancel-delete">Cancel</button>
+        <button class="btn btn-danger" id="btn-confirm-delete" disabled>Delete Account Permanently</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ADMIN JAVASCRIPT ==================== -->
+  <script>
+    (function() {
+      // State
+      let adminToken = localStorage.getItem('abt_admin_token') || null;
+      let adminEmail = localStorage.getItem('abt_admin_email') || '';
+      let usersCurrentPage = 1;
+      let explorerCurrentTable = 'users';
+      let explorerCurrentPage = 1;
+      let pendingDeleteUser = null;
+
+      // DOM Elements
+      const loginView = document.getElementById('admin-login-view');
+      const portalView = document.getElementById('admin-portal-view');
+      const loginForm = document.getElementById('admin-login-form');
+      const loginEmail = document.getElementById('admin-email');
+      const loginPwd = document.getElementById('admin-password');
+      const loginAlert = document.getElementById('login-alert');
+      const btnLogout = document.getElementById('btn-admin-logout');
+      const navEmail = document.getElementById('nav-admin-email');
+
+      // Helper: Admin API fetch wrapper
+      async function adminApi(endpoint, options = {}) {
+        const headers = {
+          'Content-Type': 'application/json',
+          ...(options.headers || {}),
+        };
+        if (adminToken) {
+          headers['Authorization'] = 'Bearer ' + adminToken;
+        }
+        const res = await fetch(endpoint, { ...options, headers });
+        if (res.status === 401) {
+          // Token expired or invalid
+          doAdminLogout();
+          throw new Error('Admin session expired. Please sign in again.');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.detail || 'Request failed with status ' + res.status);
+        }
+        return data;
+      }
+
+      function showLogin() {
+        loginView.classList.remove('hidden');
+        portalView.classList.add('hidden');
+      }
+
+      function showPortal() {
+        loginView.classList.add('hidden');
+        portalView.classList.remove('hidden');
+        navEmail.textContent = adminEmail || 'Admin';
+        loadDashboard();
+      }
+
+      function doAdminLogout() {
+        adminToken = null;
+        adminEmail = '';
+        localStorage.removeItem('abt_admin_token');
+        localStorage.removeItem('abt_admin_email');
+        showLogin();
+      }
+
+      btnLogout.addEventListener('click', doAdminLogout);
+
+      // Login handler
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        loginAlert.classList.add('hidden');
+        const email = loginEmail.value.trim();
+        const password = loginPwd.value;
+        const btn = document.getElementById('btn-login-submit');
+
+        btn.disabled = true;
+        btn.textContent = 'Verifying credentials...';
+        try {
+          const res = await fetch('/api/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data.detail || 'Authentication failed');
+          }
+          adminToken = data.token;
+          adminEmail = data.email;
+          localStorage.setItem('abt_admin_token', adminToken);
+          localStorage.setItem('abt_admin_email', adminEmail);
+          loginPwd.value = '';
+          showPortal();
+        } catch (err) {
+          loginAlert.textContent = err.message;
+          loginAlert.classList.remove('hidden');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Sign In to Console';
+        }
+      });
+
+      // Tabs switching
+      document.querySelectorAll('.nav-tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('.nav-tab').forEach((t) => t.classList.remove('active'));
+          document.querySelectorAll('.tab-panel').forEach((p) => p.classList.add('hidden'));
+          tab.classList.add('active');
+          const target = tab.dataset.tab;
+          document.getElementById('tab-' + target).classList.remove('hidden');
+
+          if (target === 'dashboard') loadDashboard();
+          else if (target === 'users') loadUsers();
+          else if (target === 'llm') loadLlmUsage();
+          else if (target === 'explorer') loadTableOverview();
+          else if (target === 'settings') loadSettings();
+        });
+      });
+
+      // ==================== DASHBOARD ====================
+      async function loadDashboard() {
+        try {
+          const data = await adminApi('/api/admin/dashboard');
+          const stats = data.stats || {};
+          
+          document.getElementById('kpi-total-users').textContent = (stats.total_users || 0).toLocaleString();
+          document.getElementById('kpi-active-sub').textContent = `${stats.active_users_30d || 0} active (30d)`;
+          document.getElementById('kpi-active-7d').textContent = (stats.active_users_7d || 0).toLocaleString();
+          document.getElementById('kpi-total-tx').textContent = (stats.total_transactions || 0).toLocaleString();
+          document.getElementById('kpi-total-udhar').textContent = (stats.total_udhar || 0).toLocaleString();
+          document.getElementById('kpi-total-receipts').textContent = (stats.total_receipts || 0).toLocaleString();
+
+          const kb = ((stats.total_storage_bytes || 0) / 1024).toFixed(1);
+          document.getElementById('kpi-total-storage').textContent = `${kb} KB`;
+
+          // Registration SVG chart
+          renderRegChart(stats.registration_trend || []);
+
+          // Key Pool Status Table
+          const poolBody = document.getElementById('llm-pool-tbody');
+          poolBody.innerHTML = '';
+          (data.llm_pool || []).forEach((slot) => {
+            const tr = document.createElement('tr');
+            let badgeClass = 'badge-success';
+            if (slot.state === 'cooling') badgeClass = 'badge-amber';
+            if (slot.state === 'disabled') badgeClass = 'badge-danger';
+
+            const lastUsed = slot.last_used ? new Date(slot.last_used).toLocaleString() : 'Never';
+            tr.innerHTML = `
+              <td><strong>${slot.slot}</strong></td>
+              <td>${slot.provider.toUpperCase()}</td>
+              <td class="mono">${slot.key_masked}</td>
+              <td><span class="badge ${badgeClass}">${slot.state}</span></td>
+              <td style="font-size:12px;color:var(--text-dim);">${lastUsed}</td>
+            `;
+            poolBody.appendChild(tr);
+          });
+
+          // Recent Errors Table
+          const errorsBody = document.getElementById('recent-errors-tbody');
+          errorsBody.innerHTML = '';
+          const errors = data.recent_errors || [];
+          if (errors.length === 0) {
+            errorsBody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-dim);padding:18px;">No server errors recorded</td></tr>';
+          } else {
+            errors.forEach((err) => {
+              const tr = document.createElement('tr');
+              const ts = err.created_at ? new Date(err.created_at).toLocaleString() : '';
+              tr.innerHTML = `
+                <td class="mono" style="font-size:12px;">${escapeHtml(err.route)}</td>
+                <td style="color:#f87171;font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(err.message)}</td>
+                <td style="font-size:11px;color:var(--text-dim);">${ts}</td>
+              `;
+              errorsBody.appendChild(tr);
+            });
+          }
+        } catch (e) {
+          console.error('loadDashboard error:', e);
+        }
+      }
+
+      document.getElementById('btn-refresh-dashboard')?.addEventListener('click', loadDashboard);
+
+      function renderRegChart(trend) {
+        const svg = document.getElementById('reg-trend-svg');
+        if (!svg) return;
+        if (!trend || trend.length === 0) {
+          svg.innerHTML = '<text x="450" y="110" fill="#64748b" text-anchor="middle" font-size="13">No registration data available</text>';
+          return;
+        }
+
+        const width = 900;
+        const height = 220;
+        const padLeft = 40;
+        const padRight = 20;
+        const padBottom = 30;
+        const padTop = 20;
+
+        const maxCount = Math.max(...trend.map(t => t.count), 5);
+        const barWidth = ((width - padLeft - padRight) / trend.length) - 6;
+
+        let barsHtml = '';
+        trend.forEach((item, idx) => {
+          const x = padLeft + idx * ((width - padLeft - padRight) / trend.length);
+          const barH = (item.count / maxCount) * (height - padBottom - padTop);
+          const y = height - padBottom - barH;
+
+          // Short date label for every 3rd or 5th bar
+          const showLabel = idx % 4 === 0 || idx === trend.length - 1;
+          const datePart = item.date.slice(5); // MM-DD
+
+          barsHtml += `
+            <g>
+              <rect x="${x}" y="${y}" width="${barWidth}" height="${Math.max(barH, 2)}" fill="#f59e0b" rx="2">
+                <title>${item.date}: ${item.count} new users</title>
+              </rect>
+              ${item.count > 0 ? `<text x="${x + barWidth / 2}" y="${y - 4}" fill="#f1f5f9" font-size="10" text-anchor="middle">${item.count}</text>` : ''}
+              ${showLabel ? `<text x="${x + barWidth / 2}" y="${height - 8}" fill="#64748b" font-size="10" text-anchor="middle">${datePart}</text>` : ''}
+            </g>
+          `;
+        });
+
+        svg.innerHTML = `
+          <line x1="${padLeft}" y1="${height - padBottom}" x2="${width - padRight}" y2="${height - padBottom}" stroke="#212a3e" stroke-width="1"/>
+          ${barsHtml}
+        `;
+      }
+
+      // ==================== USERS TAB ====================
+      async function loadUsers() {
+        const search = document.getElementById('users-search-input').value.trim();
+        const sortBy = document.getElementById('users-sort-by').value;
+        const sortOrder = document.getElementById('users-sort-order').value;
+
+        try {
+          const url = `/api/admin/users?search=${encodeURIComponent(search)}&sort_by=${sortBy}&sort_order=${sortOrder}&page=${usersCurrentPage}&page_size=25`;
+          const data = await adminApi(url);
+          const users = data.users || [];
+          const total = data.total || 0;
+
+          const tbody = document.getElementById('users-table-tbody');
+          tbody.innerHTML = '';
+
+          if (users.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-dim);padding:24px;">No users match your criteria</td></tr>';
+          } else {
+            users.forEach((u) => {
+              const tr = document.createElement('tr');
+              const joined = u.created_at ? new Date(u.created_at).toLocaleDateString() : '';
+              const lastLogin = u.last_login ? new Date(u.last_login).toLocaleDateString() : 'Never';
+              const isSuspended = u.status === 'Suspended';
+              const statusBadge = isSuspended
+                ? '<span class="badge badge-danger">Suspended</span>'
+                : '<span class="badge badge-success">Active</span>';
+
+              tr.innerHTML = `
+                <td class="mono" style="font-size:12px;color:var(--text-dim);">${u.masked_id}</td>
+                <td><strong>${escapeHtml(u.username || '-')}</strong></td>
+                <td>${escapeHtml(u.email)}</td>
+                <td style="font-size:12px;color:var(--text-muted);">${joined}</td>
+                <td style="font-size:12px;color:var(--text-muted);">${lastLogin}</td>
+                <td>${u.tx_count}</td>
+                <td>${u.udhar_count}</td>
+                <td>${statusBadge}</td>
+                <td>
+                  <div style="display:flex;gap:6px;">
+                    <button class="btn btn-secondary btn-sm btn-view-user" data-id="${u.id}">View</button>
+                    <button class="btn ${isSuspended ? 'btn-secondary' : 'btn-danger'} btn-sm btn-toggle-suspend" data-id="${u.id}" data-suspended="${isSuspended}">
+                      ${isSuspended ? 'Unsuspend' : 'Suspend'}
+                    </button>
+                    <button class="btn btn-secondary btn-sm btn-force-reset" data-id="${u.id}" title="Force password reset on next login">Reset</button>
+                    <button class="btn btn-danger btn-sm btn-delete-user" data-id="${u.id}" data-email="${escapeHtml(u.email)}">Delete</button>
+                  </div>
+                </td>
+              `;
+              tbody.appendChild(tr);
+            });
+          }
+
+          // Pagination Info
+          const startIdx = total === 0 ? 0 : (usersCurrentPage - 1) * 25 + 1;
+          const endIdx = Math.min(usersCurrentPage * 25, total);
+          document.getElementById('users-pagination-info').textContent = `Showing ${startIdx}-${endIdx} of ${total} users`;
+          document.getElementById('users-page-indicator').textContent = `Page ${usersCurrentPage}`;
+          document.getElementById('btn-users-prev').disabled = usersCurrentPage <= 1;
+          document.getElementById('btn-users-next').disabled = endIdx >= total;
+
+          attachUserActionListeners();
+        } catch (e) {
+          console.error('loadUsers error:', e);
+        }
+      }
+
+      function attachUserActionListeners() {
+        // View detail
+        document.querySelectorAll('.btn-view-user').forEach((btn) => {
+          btn.onclick = () => openUserDetail(btn.dataset.id);
+        });
+
+        // Suspend / Unsuspend
+        document.querySelectorAll('.btn-toggle-suspend').forEach((btn) => {
+          btn.onclick = async () => {
+            const uid = btn.dataset.id;
+            const currentSuspended = btn.dataset.suspended === 'true';
+            btn.disabled = true;
+            try {
+              await adminApi(`/api/admin/users/${uid}/suspend`, {
+                method: 'POST',
+                body: JSON.stringify({ suspended: !currentSuspended }),
+              });
+              loadUsers();
+            } catch (err) {
+              alert(err.message);
+              btn.disabled = false;
+            }
+          };
+        });
+
+        // Force password reset
+        document.querySelectorAll('.btn-force-reset').forEach((btn) => {
+          btn.onclick = async () => {
+            const uid = btn.dataset.id;
+            if (!confirm('Require this user to reset their password on their next login?')) return;
+            btn.disabled = true;
+            try {
+              await adminApi(`/api/admin/users/${uid}/force-reset`, {
+                method: 'POST',
+                body: JSON.stringify({ force: true }),
+              });
+              alert('User has been flagged for password reset on next login.');
+            } catch (err) {
+              alert(err.message);
+            } finally {
+              btn.disabled = false;
+            }
+          };
+        });
+
+        // Delete user
+        document.querySelectorAll('.btn-delete-user').forEach((btn) => {
+          btn.onclick = () => {
+            pendingDeleteUser = { id: btn.dataset.id, email: btn.dataset.email };
+            document.getElementById('delete-target-email').textContent = pendingDeleteUser.email;
+            document.getElementById('delete-confirm-email-input').value = '';
+            document.getElementById('btn-confirm-delete').disabled = true;
+            document.getElementById('modal-delete-user').classList.remove('hidden');
+          };
+        });
+      }
+
+      // Delete confirmation inputs
+      const deleteInput = document.getElementById('delete-confirm-email-input');
+      const deleteBtn = document.getElementById('btn-confirm-delete');
+      deleteInput.addEventListener('input', () => {
+        if (!pendingDeleteUser) return;
+        deleteBtn.disabled = deleteInput.value.trim().toLowerCase() !== pendingDeleteUser.email.toLowerCase();
+      });
+
+      deleteBtn.addEventListener('click', async () => {
+        if (!pendingDeleteUser) return;
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = 'Deleting...';
+        try {
+          await adminApi(`/api/admin/users/${pendingDeleteUser.id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ confirm_email: deleteInput.value.trim() }),
+          });
+          document.getElementById('modal-delete-user').classList.add('hidden');
+          pendingDeleteUser = null;
+          loadUsers();
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+        } finally {
+          deleteBtn.disabled = false;
+          deleteBtn.textContent = 'Delete Account Permanently';
+        }
+      });
+
+      document.getElementById('btn-close-delete-modal')?.addEventListener('click', () => {
+        document.getElementById('modal-delete-user').classList.add('hidden');
+      });
+      document.getElementById('btn-cancel-delete')?.addEventListener('click', () => {
+        document.getElementById('modal-delete-user').classList.add('hidden');
+      });
+
+      // User search & sorting
+      document.getElementById('btn-search-users')?.addEventListener('click', () => {
+        usersCurrentPage = 1;
+        loadUsers();
+      });
+      document.getElementById('users-search-input')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { usersCurrentPage = 1; loadUsers(); }
+      });
+      document.getElementById('users-sort-by')?.addEventListener('change', () => { usersCurrentPage = 1; loadUsers(); });
+      document.getElementById('users-sort-order')?.addEventListener('change', () => { usersCurrentPage = 1; loadUsers(); });
+
+      document.getElementById('btn-users-prev')?.addEventListener('click', () => {
+        if (usersCurrentPage > 1) { usersCurrentPage--; loadUsers(); }
+      });
+      document.getElementById('btn-users-next')?.addEventListener('click', () => {
+        usersCurrentPage++;
+        loadUsers();
+      });
+
+      // View User Detail Modal
+      async function openUserDetail(uid) {
+        try {
+          const det = await adminApi(`/api/admin/users/${uid}`);
+          const u = det.user || {};
+          document.getElementById('detail-user-email').textContent = u.email;
+          document.getElementById('detail-user-id').textContent = `User Primary ID: ${u.id}`;
+          document.getElementById('detail-created').textContent = u.created_at ? new Date(u.created_at).toLocaleDateString() : '-';
+          document.getElementById('detail-last-login').textContent = u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : 'Never';
+          
+          const st = det.storage || {};
+          const kb = ((st.total_bytes || 0) / 1024).toFixed(1);
+          document.getElementById('detail-storage').textContent = `${st.receipt_count || 0} files (${kb} KB)`;
+
+          // Udhar
+          const udh = det.udhar_summary || {};
+          document.getElementById('detail-lent').textContent = `Rs ${(udh.total_lent || 0).toLocaleString()}`;
+          document.getElementById('detail-borrowed').textContent = `Rs ${(udh.total_borrowed || 0).toLocaleString()}`;
+          const net = udh.net_balance || 0;
+          const netEl = document.getElementById('detail-net');
+          netEl.textContent = `Rs ${net.toLocaleString()}`;
+          netEl.style.color = net >= 0 ? 'var(--success)' : 'var(--danger)';
+
+          // Budgets
+          const bTbody = document.getElementById('detail-budgets-tbody');
+          bTbody.innerHTML = '';
+          const budgets = det.budgets || [];
+          if (budgets.length === 0) {
+            bTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-dim);">No budgets set</td></tr>';
+          } else {
+            budgets.forEach(b => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td><strong>${escapeHtml(b.category)}</strong></td>
+                <td>Rs ${b.monthly_limit.toLocaleString()}</td>
+                <td>${b.rollover_enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-neutral">Off</span>'}</td>
+              `;
+              bTbody.appendChild(tr);
+            });
+          }
+
+          // Recent Txs
+          const txTbody = document.getElementById('detail-tx-tbody');
+          txTbody.innerHTML = '';
+          const txs = det.recent_transactions || [];
+          if (txs.length === 0) {
+            txTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">No recent transactions</td></tr>';
+          } else {
+            txs.forEach(t => {
+              const tr = document.createElement('tr');
+              const dStr = t.date ? new Date(t.date).toLocaleDateString() : '';
+              tr.innerHTML = `
+                <td>${dStr}</td>
+                <td><strong>Rs ${t.amount.toLocaleString()}</strong></td>
+                <td>${escapeHtml(t.category)}</td>
+                <td>${escapeHtml(t.merchant || '-')}</td>
+              `;
+              txTbody.appendChild(tr);
+            });
+          }
+
+          document.getElementById('modal-user-detail').classList.remove('hidden');
+        } catch (e) {
+          alert('Could not load user detail: ' + e.message);
+        }
+      }
+
+      document.getElementById('btn-close-user-detail')?.addEventListener('click', () => {
+        document.getElementById('modal-user-detail').classList.add('hidden');
+      });
+
+      // ==================== TAB 3: LLM USAGE ====================
+      async function loadLlmUsage() {
+        try {
+          const data = await adminApi('/api/admin/llm-usage');
+          const daily = data.daily_usage || [];
+          const topUsers = data.top_users || [];
+
+          const totalMsgs = daily.reduce((sum, d) => sum + d.total_messages, 0);
+          document.getElementById('total-messages-30d').textContent = `Total: ${totalMsgs} messages`;
+
+          renderLlmLineChart(daily);
+
+          const topBody = document.getElementById('top-users-tbody');
+          topBody.innerHTML = '';
+          if (topUsers.length === 0) {
+            topBody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-dim);">No message logs for this month</td></tr>';
+          } else {
+            topUsers.forEach((u, i) => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td><strong>#${i + 1}</strong></td>
+                <td class="mono">${u.masked_user_id}</td>
+                <td><strong>${u.message_count}</strong></td>
+              `;
+              topBody.appendChild(tr);
+            });
+          }
+        } catch (e) {
+          console.error('loadLlmUsage error:', e);
+        }
+      }
+
+      function renderLlmLineChart(daily) {
+        const svg = document.getElementById('llm-usage-svg');
+        if (!svg) return;
+        if (!daily || daily.length === 0) {
+          svg.innerHTML = '<text x="450" y="110" fill="#64748b" text-anchor="middle" font-size="13">No usage data recorded</text>';
+          return;
+        }
+
+        const width = 900;
+        const height = 220;
+        const padLeft = 40;
+        const padRight = 20;
+        const padBottom = 30;
+        const padTop = 20;
+
+        const maxVal = Math.max(...daily.map(d => d.total_messages), 10);
+        const pts = [];
+        const step = (width - padLeft - padRight) / (daily.length - 1);
+
+        daily.forEach((d, idx) => {
+          const x = padLeft + idx * step;
+          const y = height - padBottom - ((d.total_messages / maxVal) * (height - padBottom - padTop));
+          pts.push({ x, y, ...d });
+        });
+
+        const lineD = pts.reduce((acc, p, i) => acc + (i === 0 ? `M ${p.x} ${p.y}` : ` L ${p.x} ${p.y}`), '');
+        const areaD = lineD + ` L ${pts[pts.length - 1].x} ${height - padBottom} L ${pts[0].x} ${height - padBottom} Z`;
+
+        let dotsHtml = '';
+        pts.forEach((p, idx) => {
+          const showLabel = idx % 4 === 0 || idx === pts.length - 1;
+          const datePart = p.date.slice(5);
+          dotsHtml += `
+            <circle cx="${p.x}" cy="${p.y}" r="3.5" fill="#f59e0b">
+              <title>${p.date}: ${p.total_messages} messages</title>
+            </circle>
+            ${showLabel ? `<text x="${p.x}" y="${height - 8}" fill="#64748b" font-size="10" text-anchor="middle">${datePart}</text>` : ''}
+          `;
+        });
+
+        svg.innerHTML = `
+          <line x1="${padLeft}" y1="${height - padBottom}" x2="${width - padRight}" y2="${height - padBottom}" stroke="#212a3e" stroke-width="1"/>
+          <path d="${areaD}" fill="rgba(245, 158, 11, 0.1)"/>
+          <path d="${lineD}" fill="none" stroke="#f59e0b" stroke-width="2.5"/>
+          ${dotsHtml}
+        `;
+      }
+
+      // ==================== TAB 4: DB EXPLORER ====================
+      async function loadTableOverview() {
+        try {
+          const data = await adminApi('/api/admin/tables');
+          const tables = data.tables || [];
+          const selector = document.getElementById('explorer-table-selector');
+          selector.innerHTML = '';
+
+          tables.forEach((t) => {
+            const btn = document.createElement('button');
+            btn.className = `btn ${t.table === explorerCurrentTable ? 'btn-primary' : 'btn-secondary'} btn-sm`;
+            btn.textContent = `${t.table} (${t.row_count})`;
+            btn.onclick = () => {
+              explorerCurrentTable = t.table;
+              explorerCurrentPage = 1;
+              loadTableOverview();
+              loadExplorerData();
+            };
+            selector.appendChild(btn);
+          });
+
+          loadExplorerData();
+        } catch (e) {
+          console.error('loadTableOverview error:', e);
+        }
+      }
+
+      async function loadExplorerData() {
+        const search = document.getElementById('explorer-search-input').value.trim();
+        try {
+          const url = `/api/admin/tables/${explorerCurrentTable}?search=${encodeURIComponent(search)}&page=${explorerCurrentPage}&page_size=25`;
+          const data = await adminApi(url);
+          const columns = data.columns || [];
+          const rows = data.rows || [];
+          const total = data.total || 0;
+
+          document.getElementById('explorer-table-badge').textContent = `Table: ${explorerCurrentTable} (${total} total rows)`;
+
+          // Render headers
+          const thead = document.getElementById('explorer-thead');
+          thead.innerHTML = '<tr>' + columns.map(c => `<th>${escapeHtml(c)}</th>`).join('') + '</tr>';
+
+          // Render rows
+          const tbody = document.getElementById('explorer-tbody');
+          tbody.innerHTML = '';
+          if (rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${columns.length}" style="text-align:center;color:var(--text-dim);padding:24px;">No rows found in table</td></tr>`;
+          } else {
+            rows.forEach((r) => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = columns.map(c => {
+                const val = r[c];
+                let displayVal = val === null ? '<span style="color:var(--text-dim);">NULL</span>' : escapeHtml(String(val));
+                if (c === 'password_hash') {
+                  displayVal = '<span class="badge badge-neutral">[REDACTED]</span>';
+                }
+                return `<td class="${typeof val === 'number' || c === 'id' ? 'mono' : ''}">${displayVal}</td>`;
+              }).join('');
+              tbody.appendChild(tr);
+            });
+          }
+
+          // Pagination
+          const startIdx = total === 0 ? 0 : (explorerCurrentPage - 1) * 25 + 1;
+          const endIdx = Math.min(explorerCurrentPage * 25, total);
+          document.getElementById('explorer-pagination-info').textContent = `Showing ${startIdx}-${endIdx} of ${total} rows`;
+          document.getElementById('explorer-page-indicator').textContent = `Page ${explorerCurrentPage}`;
+          document.getElementById('btn-table-prev').disabled = explorerCurrentPage <= 1;
+          document.getElementById('btn-table-next').disabled = endIdx >= total;
+        } catch (e) {
+          console.error('loadExplorerData error:', e);
+        }
+      }
+
+      document.getElementById('btn-search-table')?.addEventListener('click', () => {
+        explorerCurrentPage = 1;
+        loadExplorerData();
+      });
+      document.getElementById('explorer-search-input')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { explorerCurrentPage = 1; loadExplorerData(); }
+      });
+      document.getElementById('btn-table-prev')?.addEventListener('click', () => {
+        if (explorerCurrentPage > 1) { explorerCurrentPage--; loadExplorerData(); }
+      });
+      document.getElementById('btn-table-next')?.addEventListener('click', () => {
+        explorerCurrentPage++;
+        loadExplorerData();
+      });
+
+      // ==================== TAB 5: APP SETTINGS ====================
+      async function loadSettings() {
+        try {
+          const data = await adminApi('/api/admin/settings');
+          const s = data.settings || {};
+          
+          document.getElementById('setting-msg-cap').value = s.daily_message_cap || '100';
+          document.getElementById('setting-maintenance').checked = s.maintenance_mode === 'true';
+          document.getElementById('setting-flag-push').checked = s.push_notifications_enabled !== 'false';
+          document.getElementById('setting-flag-import').checked = s.csv_import_enabled !== 'false';
+          document.getElementById('setting-flag-receipts').checked = s.receipt_upload_enabled !== 'false';
+        } catch (e) {
+          console.error('loadSettings error:', e);
+        }
+      }
+
+      document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-save-settings');
+        const alertBox = document.getElementById('settings-save-alert');
+        alertBox.classList.add('hidden');
+
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        const payload = {
+          daily_message_cap: document.getElementById('setting-msg-cap').value,
+          maintenance_mode: String(document.getElementById('setting-maintenance').checked),
+          push_notifications_enabled: String(document.getElementById('setting-flag-push').checked),
+          csv_import_enabled: String(document.getElementById('setting-flag-import').checked),
+          receipt_upload_enabled: String(document.getElementById('setting-flag-receipts').checked),
+        };
+
+        try {
+          await adminApi('/api/admin/settings', {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          });
+          alertBox.textContent = 'Application settings updated successfully.';
+          alertBox.classList.remove('hidden');
+          setTimeout(() => alertBox.classList.add('hidden'), 4000);
+        } catch (err) {
+          alert('Failed to save settings: ' + err.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Save Live Settings';
+        }
+      });
+
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
+
+      // Check session at start
+      if (adminToken) {
+        showPortal();
+      } else {
+        showLogin();
+      }
+    })();
+  </script>
+</body>
+</html>
