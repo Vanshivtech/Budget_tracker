@@ -79,7 +79,11 @@
   // ---------- Helpers ----------
 
   function api(path, options = {}) {
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    const isFormData = options.body instanceof FormData;
+    const headers = { ...(options.headers || {}) };
+    if (!isFormData && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
     if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
     return fetch(path, { ...options, headers }).then(async (res) => {
       if (res.status === 401) {
@@ -141,10 +145,8 @@
         try {
           const res = await api('/api/undo', { method: 'POST' });
           showToast(res.message || 'Action undone successfully', 'success');
-          if (currentView === 'transactions') loadTransactionsView();
-          if (currentView === 'dashboard') loadDashboard();
+          await refreshBudgetsAndDashboard();
           if (currentView === 'chat') loadChatHistory();
-          loadGlanceData();
         } catch (err) {
           showToast(err.message || 'Failed to undo action', 'error');
         }
@@ -362,6 +364,8 @@
     hideOnboarding();
     appScreen.classList.add('active');
     updateUserUI();
+    loadUserIdentity();
+    initMobileTooltips();
     loadAllCategories();
     loadChatHistory();
     loadGlanceData();
@@ -379,15 +383,127 @@
 
   function updateUserUI() {
     if (!currentUser) return;
+    const name = currentUser.username || (currentUser.email ? currentUser.email.split('@')[0] : 'User');
     const email = currentUser.email || '';
-    userEmailEl.textContent = email;
-    userAvatarEl.textContent = email.charAt(0).toUpperCase();
+
+    const nameEl = $('#user-display-name');
+    if (nameEl) nameEl.textContent = name;
+
+    const emailEl = $('#user-email');
+    if (emailEl) {
+      emailEl.textContent = email;
+      emailEl.title = email;
+    }
+
+    const avatarEl = $('#user-avatar');
+    if (avatarEl) {
+      if (currentUser.avatar_url) {
+        avatarEl.innerHTML = `<img src="${escapeHtml(currentUser.avatar_url)}" alt="${escapeHtml(name)}" class="avatar-photo-img">`;
+      } else if (currentUser.avatar_id && typeof PRESET_AVATARS !== 'undefined') {
+        const av = PRESET_AVATARS.find((a) => a.id === currentUser.avatar_id);
+        if (av) avatarEl.innerHTML = av.svg;
+        else avatarEl.textContent = name.charAt(0).toUpperCase();
+      } else {
+        avatarEl.textContent = name.charAt(0).toUpperCase();
+      }
+    }
+
+    // Settings preview update
+    const photoImg = $('#photo-preview-img');
+    const photoPlaceholder = $('#photo-preview-placeholder');
+    const removeBtn = $('#btn-remove-photo');
+    if (photoImg && photoPlaceholder && removeBtn) {
+      if (currentUser.avatar_url) {
+        photoImg.src = currentUser.avatar_url;
+        photoImg.style.display = 'block';
+        photoPlaceholder.style.display = 'none';
+        removeBtn.style.display = 'inline-block';
+      } else {
+        photoImg.src = '';
+        photoImg.style.display = 'none';
+        photoPlaceholder.style.display = 'block';
+        removeBtn.style.display = 'none';
+      }
+    }
+  }
+
+  async function loadUserIdentity() {
+    if (!authToken) return;
+    try {
+      const data = await api('/api/user/display');
+      if (data && currentUser) {
+        if (data.username) currentUser.username = data.username;
+        if (data.avatar_id) currentUser.avatar_id = data.avatar_id;
+        if (data.avatar_url !== undefined) currentUser.avatar_url = data.avatar_url;
+        sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+        updateUserUI();
+      }
+    } catch (e) {
+      console.warn('Could not load user display:', e);
+    }
+  }
+
+  function initMobileTooltips() {
+    if (window._mobileTooltipsInit) return;
+    window._mobileTooltipsInit = true;
+    let touchTimer = null;
+    let activeTouchEl = null;
+
+    document.addEventListener('touchstart', (e) => {
+      const target = e.target.closest('[data-tooltip]');
+      if (!target) return;
+      clearTimeout(touchTimer);
+      activeTouchEl = target;
+      touchTimer = setTimeout(() => {
+        if (activeTouchEl) {
+          activeTouchEl.classList.add('tooltip-active');
+          setTimeout(() => {
+            if (activeTouchEl) activeTouchEl.classList.remove('tooltip-active');
+          }, 2500);
+        }
+      }, 450);
+    }, { passive: true });
+
+    document.addEventListener('touchend', () => {
+      clearTimeout(touchTimer);
+      if (activeTouchEl) {
+        setTimeout(() => activeTouchEl?.classList.remove('tooltip-active'), 1500);
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchmove', () => {
+      clearTimeout(touchTimer);
+    }, { passive: true });
+  }
+
+  async function refreshBudgetsAndDashboard() {
+    // Clear in-memory caches
+    cachedTransactionsList = [];
+    cachedUdharData = null;
+
+    const promises = [
+      loadDashboard(),
+      api('/api/summary').catch(() => ({})),
+      api('/api/budgets').catch(() => ({ budgets: [] })),
+      api('/api/budgets/rollover').catch(() => ({ budgets: {} })),
+    ];
+
+    if (currentView === 'transactions') {
+      promises.push(loadTransactionsView());
+    }
+    if (currentView === 'settings') {
+      promises.push(loadSettings());
+    }
+    loadGlanceData();
+
+    await Promise.all(promises);
   }
 
   // ---------- Navigation ----------
 
   function switchView(view) {
     console.log("NAV_SWITCH_VIEW:", view);
+    updateUserUI();
     currentView = view;
 
     // Update nav items (sidebar)
@@ -504,6 +620,7 @@
 
       if (data.reply && /(?:logged|recorded|added)\s+(?:rs\.?|₹|\d)/i.test(data.reply)) {
         showUndoToast('Expense logged');
+        await refreshBudgetsAndDashboard();
       }
     } catch (err) {
       typingIndicator.classList.remove('visible');
@@ -631,18 +748,18 @@
     dashboardContent.style.display = 'none';
 
     try {
-      const [summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData] = await Promise.all([
+      // Tier 1: Fast SQL aggregates (< 500ms)
+      const [summary, dashboard, snapshot, recurringData, remindersData, rolloverData] = await Promise.all([
         api('/api/summary'),
-        api('/api/dashboard'),
+        api('/api/dashboard?tier=1'),
         api('/api/snapshot').catch(() => null),
-        api('/api/insights').catch(() => null),
-        api('/api/health-score').catch(() => null),
         api('/api/recurring').catch(() => ({ recurring: [] })),
         api('/api/recurring/reminders').catch(() => ({ reminders: [] })),
         api('/api/budgets/rollover').catch(() => ({ budgets: {} })),
       ]);
 
-      renderDashboard(summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData);
+      renderDashboard(summary, dashboard, snapshot, recurringData, remindersData, rolloverData);
+      loadDashboardTier2(summary, dashboard);
     } catch (err) {
       console.error('loadDashboard error:', err);
       dashboardContent.innerHTML =
@@ -674,7 +791,7 @@
     requestAnimationFrame(tick);
   }
 
-  function renderDashboard(summary, dashboard, snapshot, insightsData, healthScore, recurringData, remindersData, rolloverData) {
+  function renderDashboard(summary, dashboard, snapshot, recurringData, remindersData, rolloverData) {
     const totalSpent = summary.total_spent || dashboard.total_spent || 0;
     const totalBudget = summary.total_budget || dashboard.total_budget || 0;
     const txnCount = (summary.recent_transactions || []).length;
@@ -725,62 +842,6 @@
       savingsRate = 0;
     }
 
-    // Potential savings
-    const discCats = ['eating out', 'shopping', 'entertainment', 'personal care', 'miscellaneous', 'food'];
-    const discSpend = categoryBreakdown
-      .filter((c) => discCats.includes(c.category.toLowerCase()))
-      .reduce((sum, c) => sum + (c.total || 0), 0);
-
-    let potentialSavings = 0;
-    let potentialSub = 'Identified opportunities';
-    if (discSpend > 0) {
-      potentialSavings = Math.round(discSpend * 0.15);
-      potentialSub = '15% trim on discretionary';
-    } else {
-      const overruns = categoryBreakdown
-        .filter((c) => budgets[c.category.toLowerCase()] && c.total > budgets[c.category.toLowerCase()])
-        .reduce((sum, c) => sum + (c.total - budgets[c.category.toLowerCase()]), 0);
-      if (overruns > 0) {
-        potentialSavings = Math.round(overruns);
-        potentialSub = 'From budget overruns';
-      } else if (budgetRemaining > 0) {
-        potentialSavings = Math.round(budgetRemaining * 0.15);
-        potentialSub = 'From unspent budget buffer';
-      } else {
-        potentialSavings = 0;
-        potentialSub = 'Track expenses to unlock';
-      }
-    }
-
-    // AI Insight determination from actual data
-    let insightTitle = 'FINANCIAL HABIT SUMMARY';
-    let insightText = '';
-    let insightPrompt = '';
-
-    if (categoryBreakdown.length > 0) {
-      const top = categoryBreakdown[0];
-      const pct = totalSpent > 0 ? Math.round((top.total / totalSpent) * 100) : 0;
-      const topLimit = budgets[top.category.toLowerCase()] || 0;
-      if (topLimit > 0 && top.total > topLimit) {
-        insightTitle = `OVER-BUDGET: ${top.category.toUpperCase()}`;
-        insightText = `You spent ${formatCurrency(top.total)} on ${top.category}, which is ${formatCurrency(top.total - topLimit)} over your ${formatCurrency(topLimit)} monthly budget.`;
-        insightPrompt = `How can I reduce my ${top.category} expenses this month?`;
-      } else {
-        insightTitle = `${top.category.toUpperCase()} IS YOUR LARGEST OUTFLOW`;
-        insightText = `Spending on ${top.category} accounts for ${pct}% of your total outflow this month (${formatCurrency(top.total)} across logged expenses).`;
-        insightPrompt = `Analyze my spending on ${top.category} and suggest ways to optimize it.`;
-      }
-    } else if (insightsData && insightsData.insights && insightsData.insights.length > 0) {
-      const ins = insightsData.insights[0];
-      insightTitle = (ins.title || 'SPENDING PATTERN IDENTIFIED').toUpperCase();
-      insightText = ins.body || ins.text || `Top category spend is ${formatCurrency(ins.value || 0)}.`;
-      insightPrompt = `Tell me more about: ${ins.title}`;
-    } else {
-      insightTitle = 'PROACTIVE SPENDING HABITS';
-      insightText = 'Log your daily expenses in chat or adjust category limits to receive automated insights and habit recommendations.';
-      insightPrompt = 'Help me plan my budget for this month';
-    }
-
     let html = '';
 
     // 0. Bill Reminder Banner (if any bills due in <= 2 days)
@@ -803,24 +864,8 @@
       `;
     }
 
-    // 0b. Overspending Projections Alert Banner (if any category projected to exceed budget)
-    if (dashboard && dashboard.projections && dashboard.projections.length > 0) {
-      const topProj = dashboard.projections[0];
-      html += `
-        <div class="projection-alert-banner" style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--radius-md);padding:12px 16px;display:flex;align-items:center;gap:12px;">
-          <div style="color:var(--danger);flex-shrink:0;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;">
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-              <line x1="12" y1="9" x2="12" y2="13"/>
-              <line x1="12" y1="17" x2="12.01" y2="17"/>
-            </svg>
-          </div>
-          <div style="flex:1;font-size:13px;line-height:1.4;">
-            <strong style="color:var(--danger);">Projected Overspending:</strong> ${escapeHtml(topProj.message)}
-          </div>
-        </div>
-      `;
-    }
+    // 0b. Overspending Projections Alert Banner (Tier 2 placeholder)
+    html += '<div id="dashboard-projections-container"></div>';
 
     // 1. Dashboard Header
     html += `
@@ -830,11 +875,11 @@
           <p>Personal financial health and monthly expense breakdown</p>
         </div>
         <div class="dashboard-header-actions">
-          <button class="btn-primary" id="btn-open-add-income" style="font-size:12px;padding:7px 14px;display:inline-flex;align-items:center;gap:6px;">
+          <button class="btn-primary" id="btn-open-add-income" style="font-size:12px;padding:7px 14px;display:inline-flex;align-items:center;gap:6px;" data-tooltip="Record salary, freelance, or other income this month" data-tooltip-pos="bottom">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add Income
           </button>
-          <button class="btn-export-statement" id="btn-open-export">
+          <button class="btn-export-statement" id="btn-open-export" data-tooltip="Download your monthly transactions as PDF or Excel" data-tooltip-pos="bottom">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
               <polyline points="7 10 12 15 17 10"/>
@@ -919,9 +964,9 @@
       </div>
     `;
 
-    // Card 4: Potential Savings
+    // Card 4: Potential Savings (Tier 2 placeholder with subtle skeleton / spinner)
     html += `
-      <div class="stat-card">
+      <div class="stat-card" id="stat-card-potential">
         <div class="stat-card-header">
           <span class="stat-card-label">Potential Savings</span>
           <div class="stat-card-icon">
@@ -930,92 +975,38 @@
             </svg>
           </div>
         </div>
-        <div class="stat-card-value" id="stat-val-potential">${formatCurrency(potentialSavings)}</div>
-        <div class="stat-card-sub">
-          <span class="stat-pill neutral">${potentialSub}</span>
+        <div class="stat-card-value" id="stat-val-potential">
+          <div class="skeleton-shimmer" style="height:26px;width:75px;border-radius:4px;display:inline-block;"></div>
+        </div>
+        <div class="stat-card-sub" id="stat-sub-potential">
+          <div class="tier2-spinner-wrap"><div class="tier2-spinner"></div><span>Calculating...</span></div>
         </div>
       </div>
     `;
 
     html += '</div>'; // close stat-cards-row
 
-    // 3. Financial Health Score Card
-    if (healthScore && typeof healthScore.score === 'number') {
-      const tierClass = healthScore.tier === 'Excellent' ? 'excellent' : (healthScore.tier === 'Good' ? 'good' : (healthScore.tier === 'Fair' ? 'fair' : 'attention'));
-      const partialBadge = healthScore.is_partial ? '<span class="partial-score-badge">Partial</span>' : '';
-
-      let factorsHtml = '';
-      (healthScore.factors || []).forEach((f) => {
-        const factorPct = Math.max(5, Math.min(100, f.score));
-        factorsHtml += `
-          <div class="health-factor-item">
-            <div class="health-factor-top">
-              <span class="health-factor-name">${escapeHtml(f.name)}</span>
-              <span class="health-factor-metric">${escapeHtml(f.raw_metric || '')} <strong class="health-factor-score">${f.score}/100</strong></span>
-            </div>
-            <div class="health-factor-bar-bg">
-              <div class="health-factor-bar-fill ${tierClass}" style="width: ${factorPct}%;"></div>
-            </div>
-            <div class="health-factor-desc">${escapeHtml(f.description || '')}</div>
-          </div>
-        `;
-      });
-
-      const topTip = (healthScore.tips && healthScore.tips.length > 0) ? healthScore.tips[0] : '';
-
-      html += `
-        <div class="health-score-card">
-          <div class="health-score-header">
-            <div class="health-score-left">
-              <div class="health-score-gauge-wrap">
-                <div class="health-score-number">${healthScore.score}</div>
-                <div class="health-score-max">/100</div>
-              </div>
-              <div class="health-score-meta">
-                <div class="health-tier-badge ${tierClass}">${escapeHtml(healthScore.tier)} ${partialBadge}</div>
-                <h3>Financial Health Score</h3>
-                <p>Deterministic composite based on your savings, budget adherence, and logging habits</p>
-              </div>
-            </div>
-          </div>
-          <div class="health-factors-grid">
-            ${factorsHtml}
-          </div>
-          ${topTip ? `
-            <div class="health-score-tip">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="16" x2="12" y2="12"/>
-                <line x1="12" y1="8" x2="12.01" y2="8"/>
-              </svg>
-              <span>${escapeHtml(topTip)}</span>
-            </div>
-          ` : ''}
-        </div>
-      `;
-    }
-
-    // 4. AI Insight Callout Card
+    // 3. Financial Health Score Card (Tier 2 placeholder)
     html += `
-      <div class="insight-callout-card">
-        <div class="insight-callout-left">
-          <div class="insight-pill">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            AI Financial Insight
+      <div id="dashboard-health-score-container">
+        <div class="health-score-card skeleton-card" style="padding:22px;border:1px dashed var(--border-subtle);background:var(--bg-card);border-radius:var(--radius-lg);margin-bottom:20px;">
+          <div class="tier2-spinner-wrap" style="display:flex;align-items:center;gap:10px;color:var(--text-tertiary);font-size:13px;">
+            <div class="tier2-spinner"></div>
+            <span>Evaluating financial health score...</span>
           </div>
-          <div class="insight-callout-title">${escapeHtml(insightTitle)}</div>
-          <div class="insight-callout-body">${escapeHtml(insightText)}</div>
         </div>
-        <button class="insight-action-btn" id="insight-action-btn" data-prompt="${escapeHtml(insightPrompt)}">
-          Ask ABT
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="9 18 15 12 9 6"/>
-          </svg>
-        </button>
+      </div>
+    `;
+
+    // 4. AI Insight Callout Card (Tier 2 placeholder)
+    html += `
+      <div id="dashboard-insight-container">
+        <div class="insight-callout-card skeleton-card" style="padding:20px;border:1px dashed var(--border-subtle);background:var(--bg-card);border-radius:var(--radius-lg);margin-bottom:20px;">
+          <div class="tier2-spinner-wrap" style="display:flex;align-items:center;gap:10px;color:var(--text-tertiary);font-size:13px;">
+            <div class="tier2-spinner"></div>
+            <span>Synthesizing AI insights...</span>
+          </div>
+        </div>
       </div>
     `;
 
@@ -1206,20 +1197,6 @@
     animateNumber($('#stat-val-spent'), totalSpent, formatCurrency);
     animateNumber($('#stat-val-budget'), budgetRemaining, formatCurrency);
     animateNumber($('#stat-val-savings'), savingsThisMonth, formatCurrency);
-    animateNumber($('#stat-val-potential'), potentialSavings, formatCurrency);
-
-    // Wire up AI Insight action button
-    const insightBtn = $('#insight-action-btn');
-    if (insightBtn) {
-      insightBtn.addEventListener('click', () => {
-        const prompt = insightBtn.getAttribute('data-prompt');
-        if (prompt && composerInput) {
-          composerInput.value = prompt;
-          switchView('chat');
-          composerInput.focus();
-        }
-      });
-    }
 
     // Wire up Add Income button
     const addIncomeBtn = $('#btn-open-add-income');
@@ -1276,7 +1253,7 @@
         try {
           await api(`/api/recurring/${id}/deactivate`, { method: 'POST' });
           showToast('Recurring bill deactivated', 'success');
-          loadDashboard();
+          await refreshBudgetsAndDashboard();
         } catch (err) {
           showToast(err.message || 'Failed to deactivate bill', 'error');
         }
@@ -1298,6 +1275,7 @@
             body: JSON.stringify({ category: cat, enabled }),
           });
           showToast(`Budget rollover for ${cat} ${enabled ? 'enabled' : 'disabled'}`, 'success');
+          await refreshBudgetsAndDashboard();
         } catch (err) {
           e.target.checked = !enabled;
           if (textSpan) textSpan.textContent = !enabled ? 'Rollover' : 'Off';
@@ -1312,6 +1290,146 @@
         openAddBillModal(btn.dataset.txId);
       });
     });
+  }
+
+  // ---------- Tier 2 Dashboard Loader (Asynchronous computations) ----------
+  async function loadDashboardTier2(summary, dashboard) {
+    try {
+      const tier2 = await api('/api/dashboard/tier2');
+
+      // 1. Update Potential Savings Card
+      const potVal = $('#stat-val-potential');
+      const potSub = $('#stat-sub-potential');
+      if (potVal && typeof tier2.potential_savings === 'number') {
+        animateNumber(potVal, tier2.potential_savings, formatCurrency);
+        if (potSub) {
+          potSub.innerHTML = `<span class="stat-pill neutral">${escapeHtml(tier2.potential_savings_subtitle || 'Identified opportunities')}</span>`;
+        }
+      }
+
+      // 2. Update Projections Banner
+      const projContainer = $('#dashboard-projections-container');
+      if (projContainer) {
+        if (tier2.projections && tier2.projections.length > 0) {
+          const topProj = tier2.projections[0];
+          projContainer.innerHTML = `
+            <div class="projection-alert-banner" style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--radius-md);padding:12px 16px;display:flex;align-items:center;gap:12px;">
+              <div style="color:var(--danger);flex-shrink:0;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <div style="flex:1;font-size:13px;line-height:1.4;">
+                <strong style="color:var(--danger);">Projected Overspending:</strong> ${escapeHtml(topProj.message)}
+              </div>
+            </div>
+          `;
+        } else {
+          projContainer.innerHTML = '';
+        }
+      }
+
+      // 3. Update Health Score Card
+      const hsContainer = $('#dashboard-health-score-container');
+      if (hsContainer && tier2.health_score && typeof tier2.health_score.score === 'number') {
+        const hs = tier2.health_score;
+        const tierClass = hs.tier === 'Excellent' ? 'excellent' : (hs.tier === 'Good' ? 'good' : (hs.tier === 'Fair' ? 'fair' : 'attention'));
+        const partialBadge = hs.is_partial ? '<span class="partial-score-badge">Partial</span>' : '';
+
+        let factorsHtml = '';
+        (hs.factors || []).forEach((f) => {
+          const factorPct = Math.max(5, Math.min(100, f.score));
+          factorsHtml += `
+            <div class="health-factor-item">
+              <div class="health-factor-top">
+                <span class="health-factor-name">${escapeHtml(f.name)}</span>
+                <span class="health-factor-metric">${escapeHtml(f.raw_metric || '')} <strong class="health-factor-score">${f.score}/100</strong></span>
+              </div>
+              <div class="health-factor-bar-bg">
+                <div class="health-factor-bar-fill ${tierClass}" style="width: ${factorPct}%;"></div>
+              </div>
+              <div class="health-factor-desc">${escapeHtml(f.description || '')}</div>
+            </div>
+          `;
+        });
+
+        const topTip = (hs.tips && hs.tips.length > 0) ? hs.tips[0] : '';
+        hsContainer.innerHTML = `
+          <div class="health-score-card">
+            <div class="health-score-header">
+              <div class="health-score-left">
+                <div class="health-score-gauge-wrap">
+                  <div class="health-score-number">${hs.score}</div>
+                  <div class="health-score-max">/100</div>
+                </div>
+                <div class="health-score-meta">
+                  <div class="health-tier-badge ${tierClass}">${escapeHtml(hs.tier)} ${partialBadge}</div>
+                  <h3>Financial Health Score</h3>
+                  <p>Deterministic composite based on your savings, budget adherence, and logging habits</p>
+                </div>
+              </div>
+            </div>
+            <div class="health-factors-grid">
+              ${factorsHtml}
+            </div>
+            ${topTip ? `
+              <div class="health-score-tip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="16" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                <span>${escapeHtml(topTip)}</span>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+
+      // 4. Update AI Insight Card
+      const insContainer = $('#dashboard-insight-container');
+      if (insContainer && tier2.ai_insight) {
+        const ins = tier2.ai_insight;
+        insContainer.innerHTML = `
+          <div class="insight-callout-card">
+            <div class="insight-callout-left">
+              <div class="insight-pill">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="16" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                AI Financial Insight
+              </div>
+              <div class="insight-callout-title">${escapeHtml(ins.title || '')}</div>
+              <div class="insight-callout-body">${escapeHtml(ins.text || '')}</div>
+            </div>
+            <button class="insight-action-btn" id="insight-action-btn" data-prompt="${escapeHtml(ins.prompt || '')}">
+              Ask ABT
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </button>
+          </div>
+        `;
+
+        const newInsightBtn = $('#insight-action-btn');
+        if (newInsightBtn) {
+          newInsightBtn.addEventListener('click', () => {
+            const prompt = newInsightBtn.getAttribute('data-prompt');
+            if (prompt && composerInput) {
+              composerInput.value = prompt;
+              switchView('chat');
+              composerInput.focus();
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Dashboard Tier 2 load error:', err);
+    }
   }
 
   // SVG Donut Chart Renderer
@@ -1572,8 +1690,8 @@
             <span class="udhar-person-amount ${colorClass}">${formatCurrency(Math.abs(pNet))}</span>
             <div style="font-size:0.72rem;color:var(--text-tertiary);">${pNet > 0 ? 'Owes you' : (pNet < 0 ? 'You owe' : 'Settled')}</div>
             <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:6px;">
-              <button class="btn-secondary btn-sm btn-open-ledger" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" style="font-size:11px;padding:3px 8px;">Ledger</button>
-              ${pNet > 0 ? `<button class="btn-secondary btn-sm btn-nudge-reminder" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" style="font-size:11px;padding:3px 8px;">Send reminder</button>` : ''}
+              <button class="btn-secondary btn-sm btn-open-ledger" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" data-tooltip="View detailed transaction history with this person" style="font-size:11px;padding:3px 8px;">Ledger</button>
+              ${pNet > 0 ? `<button class="btn-secondary btn-sm btn-nudge-reminder" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" data-tooltip="Generate a polite WhatsApp reminder message for this person" style="font-size:11px;padding:3px 8px;">Send reminder</button>` : ''}
             </div>
           </div>
         </div>`;
@@ -2315,6 +2433,7 @@
         if ($('#split-calc-preview')) $('#split-calc-preview').style.display = 'none';
 
         loadUdhar();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         showToast(err.message || 'Failed to record split', 'error');
       } finally {
@@ -3086,6 +3205,7 @@
         if ($('#chosen-file-name')) $('#chosen-file-name').style.display = 'none';
 
         switchView('dashboard');
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         showToast(err.message || 'Import failed', 'error');
       } finally {
@@ -3155,16 +3275,131 @@
             btn.classList.add('active');
             try {
               await api('/api/user/avatar', {
-                method: 'POST',
+                method: 'PATCH',
                 body: JSON.stringify({ avatar_id: aid }),
               });
+              if (currentUser) {
+                currentUser.avatar_id = aid;
+                currentUser.avatar_url = null;
+                sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+              }
               showToast('Avatar updated', 'success');
-              updateUserAvatarHeader(aid);
+              updateUserUI();
             } catch (err) {
               showToast(err.message || 'Failed to update avatar', 'error');
             }
           });
         });
+      }
+
+      // Custom photo upload & remove wiring
+      const fileInput = $('#avatar-photo-file-input');
+      const uploadTrigger = $('#btn-trigger-photo-upload');
+      const removePhotoBtn = $('#btn-remove-photo');
+      const uploadError = $('#photo-upload-error');
+
+      if (uploadTrigger && !uploadTrigger._bound) {
+        uploadTrigger._bound = true;
+        uploadTrigger.addEventListener('click', () => {
+          if (uploadError) uploadError.style.display = 'none';
+          fileInput?.click();
+        });
+      }
+
+      if (fileInput && !fileInput._bound) {
+        fileInput._bound = true;
+        fileInput.addEventListener('change', async (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+
+          if (uploadError) uploadError.style.display = 'none';
+
+          // Validate format by content type (JPG and PNG only, reject GIFs)
+          const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+          if (!allowedTypes.includes(file.type.toLowerCase())) {
+            const errMsg = 'Only JPG and PNG images are supported.';
+            if (uploadError) {
+              uploadError.textContent = errMsg;
+              uploadError.style.display = 'block';
+            }
+            showToast(errMsg, 'error');
+            fileInput.value = '';
+            return;
+          }
+
+          // Validate max size 2 MB
+          if (file.size > 2 * 1024 * 1024) {
+            const errMsg = 'Photo size must be 2 MB or less.';
+            if (uploadError) {
+              uploadError.textContent = errMsg;
+              uploadError.style.display = 'block';
+            }
+            showToast(errMsg, 'error');
+            fileInput.value = '';
+            return;
+          }
+
+          uploadTrigger.disabled = true;
+          uploadTrigger.textContent = 'Uploading...';
+
+          try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await api('/api/user/avatar-upload', {
+              method: 'POST',
+              body: formData,
+            });
+
+            if (currentUser) {
+              currentUser.avatar_url = res.avatar_url;
+              sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+            }
+            updateUserUI();
+            showToast('Profile photo updated successfully', 'success');
+          } catch (err) {
+            const errMsg = err.message || 'Failed to upload photo';
+            if (uploadError) {
+              uploadError.textContent = errMsg;
+              uploadError.style.display = 'block';
+            }
+            showToast(errMsg, 'error');
+          } finally {
+            uploadTrigger.disabled = false;
+            uploadTrigger.textContent = 'Upload Photo';
+            fileInput.value = '';
+          }
+        });
+      }
+
+      if (removePhotoBtn && !removePhotoBtn._bound) {
+        removePhotoBtn._bound = true;
+        removePhotoBtn.addEventListener('click', async () => {
+          removePhotoBtn.disabled = true;
+          removePhotoBtn.textContent = 'Removing...';
+          try {
+            await api('/api/user/avatar-photo', { method: 'DELETE' });
+            if (currentUser) {
+              currentUser.avatar_url = null;
+              sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+            }
+            updateUserUI();
+            showToast('Profile photo removed', 'success');
+          } catch (err) {
+            showToast(err.message || 'Failed to remove photo', 'error');
+          } finally {
+            removePhotoBtn.disabled = false;
+            removePhotoBtn.textContent = 'Remove photo';
+          }
+        });
+      }
+
+      // Sync display data to currentUser
+      if (displayData && currentUser) {
+        if (displayData.username) currentUser.username = displayData.username;
+        if (displayData.avatar_id) currentUser.avatar_id = displayData.avatar_id;
+        if (displayData.avatar_url !== undefined) currentUser.avatar_url = displayData.avatar_url;
+        sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+        updateUserUI();
       }
 
       // 3. Web Push State
@@ -3231,17 +3466,18 @@
   }
 
   function updateUserAvatarHeader(avatarId) {
-    const el = $('#user-avatar');
-    if (!el) return;
-    const av = PRESET_AVATARS.find((a) => a.id === avatarId);
-    if (av) {
-      el.innerHTML = av.svg;
+    if (currentUser) {
+      currentUser.avatar_id = avatarId;
+      currentUser.avatar_url = null;
+      sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
     }
+    updateUserUI();
   }
 
   // Save username
   const saveUsernameBtn = $('#btn-save-username');
-  if (saveUsernameBtn) {
+  if (saveUsernameBtn && !saveUsernameBtn._bound) {
+    saveUsernameBtn._bound = true;
     saveUsernameBtn.addEventListener('click', async () => {
       const val = $('#settings-username-input')?.value?.trim();
       if (!val || val.length < 3 || val.length > 20) {
@@ -3250,10 +3486,15 @@
       }
       try {
         await api('/api/user/username', {
-          method: 'POST',
+          method: 'PATCH',
           body: JSON.stringify({ username: val }),
         });
+        if (currentUser) {
+          currentUser.username = val;
+          sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+        }
         showToast('Username saved successfully', 'success');
+        updateUserUI();
       } catch (err) {
         showToast(err.message || 'Failed to save username', 'error');
       }
@@ -3621,30 +3862,30 @@
           <span class="quick-add-title">Quick Log Expense</span>
         </div>
         <form class="quick-add-form" id="${formId}" onsubmit="return false;">
-          <div class="quick-add-field quick-add-amount-wrap">
+          <div class="quick-add-field quick-add-amount-wrap" data-tooltip="Enter the amount spent">
             <label for="${amtId}">Amount *</label>
-            <input type="number" id="${amtId}" class="form-input quick-add-input" placeholder="Rs 0.00" step="0.01" min="0.01" required>
+            <input type="number" id="${amtId}" class="form-input quick-add-input" placeholder="Rs 0.00" step="0.01" min="0.01" required data-tooltip="Enter the amount spent">
           </div>
-          <div class="quick-add-field">
+          <div class="quick-add-field" data-tooltip="Choose the spending category">
             <label for="${catId}">Category *</label>
-            <select id="${catId}" class="form-input quick-add-select" required>
+            <select id="${catId}" class="form-input quick-add-select" required data-tooltip="Choose the spending category">
               ${catOpts}
             </select>
           </div>
-          <div class="quick-add-field quick-add-note-wrap">
+          <div class="quick-add-field quick-add-note-wrap" data-tooltip="Optional note about this expense">
             <label for="${noteId}">Note</label>
-            <input type="text" id="${noteId}" class="form-input quick-add-input" placeholder="e.g. Lunch with team">
+            <input type="text" id="${noteId}" class="form-input quick-add-input" placeholder="e.g. Lunch with team" data-tooltip="Optional note about this expense">
           </div>
-          <div class="quick-add-field quick-add-date-wrap">
+          <div class="quick-add-field quick-add-date-wrap" data-tooltip="Date of expense (defaults to today)">
             <label for="${dateId}">Date</label>
-            <input type="date" id="${dateId}" class="form-input quick-add-input" value="${todayStr}" required>
+            <input type="date" id="${dateId}" class="form-input quick-add-input" value="${todayStr}" required data-tooltip="Date of expense (defaults to today)">
           </div>
-          <div class="quick-add-field quick-add-tag-wrap">
+          <div class="quick-add-field quick-add-tag-wrap" data-tooltip="Add a tag like 'work' or 'trip' to filter later">
             <label for="${tagId}">Tag</label>
-            <input type="text" id="${tagId}" class="form-input quick-add-input" placeholder="e.g. office">
+            <input type="text" id="${tagId}" class="form-input quick-add-input" placeholder="e.g. office" data-tooltip="Add a tag like 'work' or 'trip' to filter later">
           </div>
           <div class="quick-add-btn-wrap">
-            <button type="submit" class="btn-primary quick-add-submit-btn" id="${btnId}">
+            <button type="submit" class="btn-primary quick-add-submit-btn" id="${btnId}" data-tooltip="Save this expense to your tracker">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               <span>Add</span>
             </button>
@@ -3702,9 +3943,7 @@
         if (tagInput) tagInput.value = '';
         if (dateInput) dateInput.value = todayStr;
 
-        if (currentView === 'transactions') loadTransactionsView();
-        if (currentView === 'dashboard') loadDashboard();
-        loadGlanceData();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         showToast(err.message || 'Failed to log expense', 'error');
       } finally {
@@ -3919,9 +4158,7 @@
             showToast('Expense deleted', 'success');
             showUndoToast('Expense deleted');
             txSelectedIds.delete(id);
-            loadTransactionsView();
-            loadDashboard();
-            loadGlanceData();
+            await refreshBudgetsAndDashboard();
           }
         );
       });
@@ -4006,9 +4243,7 @@
         showToast(`Deleted ${res.deleted_count} transactions`, 'success');
         txSelectedIds.clear();
         closeModal('#modal-bulk-delete', true);
-        loadTransactionsView();
-        loadDashboard();
-        loadGlanceData();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         showToast(err.message || 'Bulk delete failed', 'error');
       } finally {
@@ -4198,9 +4433,7 @@
         }
 
         closeModal('#modal-expense-entry', true);
-        if (currentView === 'transactions') loadTransactionsView();
-        if (currentView === 'dashboard') loadDashboard();
-        loadGlanceData();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         if (errEl) {
           errEl.textContent = err.message || 'Failed to save expense';
@@ -4292,10 +4525,9 @@
         showToast(`Logged Rs ${amount.toFixed(2)} income (${source})`, 'success');
         closeModal('#modal-income-entry', true);
 
-        if (currentView === 'dashboard') loadDashboard();
+        await refreshBudgetsAndDashboard();
         if (currentView === 'calendar') loadCalendar();
         if (currentView === 'insights') loadInsights();
-        loadGlanceData();
       } catch (err) {
         if (errEl) {
           errEl.textContent = err.message || 'Failed to save income';
@@ -4345,22 +4577,22 @@
           </td>
           <td>
             <div class="budget-inline-limit-wrap">
-              <input type="number" class="budget-inline-limit-input" data-cat="${escapeHtml(cat)}" value="${limit}" min="0" step="50">
-              <button class="btn-primary btn-sm btn-save-budget-inline" data-cat="${escapeHtml(cat)}" style="padding:4px 8px;font-size:11px;">Save</button>
+              <input type="number" class="budget-inline-limit-input" data-cat="${escapeHtml(cat)}" value="${limit}" min="0" step="50" data-tooltip="Monthly spending limit for this category">
+              <button class="btn-primary btn-sm btn-save-budget-inline" data-cat="${escapeHtml(cat)}" style="padding:4px 8px;font-size:11px;" data-tooltip="Save monthly spending limit">Save</button>
             </div>
           </td>
           <td style="color:var(--text-secondary);">${formatCurrency(spent)}</td>
           <td>${statusHtml}</td>
           <td>
-            <label class="rollover-switch-label" style="transform:scale(0.85);transform-origin:left center;">
-              <input type="checkbox" class="budget-mgr-rollover-cb" data-cat="${escapeHtml(cat)}" ${isRollover ? 'checked' : ''}>
+            <label class="rollover-switch-label" style="transform:scale(0.85);transform-origin:left center;" data-tooltip="Carry unused budget forward to next month">
+              <input type="checkbox" class="budget-mgr-rollover-cb" data-cat="${escapeHtml(cat)}" ${isRollover ? 'checked' : ''} data-tooltip="Carry unused budget forward to next month">
               <span class="rollover-slider"></span>
               <span class="rollover-switch-text">${isRollover ? 'On' : 'Off'}</span>
             </label>
           </td>
           <td style="text-align:right;">
             ${hasBudget ? `
-              <button class="btn-icon-action danger btn-del-budget-row" data-cat="${escapeHtml(cat)}" title="Remove budget limit">
+              <button class="btn-icon-action danger btn-del-budget-row" data-cat="${escapeHtml(cat)}" title="Remove budget limit" data-tooltip="Remove spending limit for this category">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             ` : ''}
@@ -4406,8 +4638,7 @@
             body: JSON.stringify({ monthly_limit: val }),
           });
           showToast(`Budget for ${cat} updated to Rs ${val}`, 'success');
-          loadSettings();
-          loadDashboard();
+          await refreshBudgetsAndDashboard();
         } catch (err) {
           showToast(err.message || 'Failed to update budget', 'error');
         } finally {
@@ -4442,6 +4673,7 @@
             body: JSON.stringify({ rollover_enabled: enabled }),
           });
           showToast(`Rollover for ${cat} ${enabled ? 'enabled' : 'disabled'}`, 'success');
+          await refreshBudgetsAndDashboard();
         } catch (err) {
           cb.checked = !enabled;
           if (textSpan) textSpan.textContent = !enabled ? 'On' : 'Off';
@@ -4460,8 +4692,7 @@
           async () => {
             await api(`/api/budgets/${encodeURIComponent(cat)}`, { method: 'DELETE' });
             showToast(`Budget limit for ${cat} removed`, 'success');
-            loadSettings();
-            loadDashboard();
+            await refreshBudgetsAndDashboard();
           }
         );
       });
@@ -4522,8 +4753,7 @@
         });
         showToast(`Budget for ${cat} set to Rs ${limitVal}`, 'success');
         closeModal('#modal-budget-add', true);
-        loadSettings();
-        loadDashboard();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         if (errEl) { errEl.textContent = err.message || 'Failed to save budget'; errEl.style.display = 'block'; }
       } finally {
@@ -5485,7 +5715,7 @@
         }
 
         closeModal('#modal-clear-confirm');
-        loadDashboard();
+        await refreshBudgetsAndDashboard();
       } catch (err) {
         showToast(err.message || 'Operation failed', 'error');
       } finally {
