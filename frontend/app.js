@@ -104,6 +104,57 @@
     }, 3500);
   }
 
+  // ---------- Floating Undo Toast Banner ----------
+  let undoToastTimer = null;
+
+  function showUndoToast(actionText) {
+    const banner = $('#undo-toast-banner');
+    const msgEl = $('#undo-toast-message');
+    if (!banner || !msgEl) return;
+
+    msgEl.textContent = actionText || 'Expense logged';
+    banner.style.display = 'flex';
+    banner.style.animation = 'undoToastIn 250ms cubic-bezier(0.16, 1, 0.3, 1) forwards';
+
+    clearTimeout(undoToastTimer);
+    undoToastTimer = setTimeout(() => {
+      hideUndoToast();
+    }, 10000);
+  }
+
+  function hideUndoToast() {
+    const banner = $('#undo-toast-banner');
+    if (!banner || banner.style.display === 'none') return;
+    clearTimeout(undoToastTimer);
+    banner.style.animation = 'undoToastOut 200ms ease forwards';
+    setTimeout(() => {
+      banner.style.display = 'none';
+    }, 200);
+  }
+
+  function initUndoToast() {
+    const btn = $('#undo-toast-btn');
+    const closeBtn = $('#undo-toast-close');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        hideUndoToast();
+        try {
+          const res = await api('/api/undo', { method: 'POST' });
+          showToast(res.message || 'Action undone successfully', 'success');
+          if (currentView === 'transactions') loadTransactionsView();
+          if (currentView === 'dashboard') loadDashboard();
+          if (currentView === 'chat') loadChatHistory();
+          loadGlanceData();
+        } catch (err) {
+          showToast(err.message || 'Failed to undo action', 'error');
+        }
+      });
+    }
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => hideUndoToast());
+    }
+  }
+
   // ---------- Theme Management ----------
   function getPreferredTheme() {
     const saved = localStorage.getItem('abt_theme');
@@ -154,6 +205,7 @@
   }
 
   initTheme();
+  initUndoToast();
 
   function formatCurrency(n) {
     if (n == null || isNaN(n)) return '--';
@@ -310,10 +362,20 @@
     hideOnboarding();
     appScreen.classList.add('active');
     updateUserUI();
+    loadAllCategories();
     loadChatHistory();
     loadGlanceData();
     switchView('chat');
   }
+
+  window.setAuthSession = function(tok, usr) {
+    authToken = tok;
+    currentUser = usr;
+    sessionStorage.setItem('abt_token', tok);
+    sessionStorage.setItem('abt_user', JSON.stringify(usr));
+    sessionStorage.setItem('abt_onboarding_skipped', '1');
+    showApp();
+  };
 
   function updateUserUI() {
     if (!currentUser) return;
@@ -325,6 +387,7 @@
   // ---------- Navigation ----------
 
   function switchView(view) {
+    console.log("NAV_SWITCH_VIEW:", view);
     currentView = view;
 
     // Update nav items (sidebar)
@@ -346,6 +409,7 @@
     closeSidebar();
 
     // Load data for the view
+    if (view === 'transactions') loadTransactionsView();
     if (view === 'dashboard') loadDashboard();
     if (view === 'calendar') loadCalendar();
     if (view === 'bills') loadBills();
@@ -354,6 +418,7 @@
     if (view === 'insights') loadInsights();
     if (view === 'settings') loadSettings();
   }
+  window.switchView = switchView;
 
   // Nav click handlers
   $$('.nav-item').forEach((n) => {
@@ -436,6 +501,10 @@
 
       typingIndicator.classList.remove('visible');
       appendMessage('assistant', data.reply);
+
+      if (data.reply && /(?:logged|recorded|added)\s+(?:rs\.?|₹|\d)/i.test(data.reply)) {
+        showUndoToast('Expense logged');
+      }
     } catch (err) {
       typingIndicator.classList.remove('visible');
       appendMessage('assistant', 'Something went wrong. Please try again.');
@@ -557,6 +626,7 @@
   // ---------- Dashboard ----------
 
   async function loadDashboard() {
+    renderQuickAddBar('dashboard-quick-add-wrap');
     dashboardLoader.style.display = '';
     dashboardContent.style.display = 'none';
 
@@ -760,6 +830,10 @@
           <p>Personal financial health and monthly expense breakdown</p>
         </div>
         <div class="dashboard-header-actions">
+          <button class="btn-primary" id="btn-open-add-income" style="font-size:12px;padding:7px 14px;display:inline-flex;align-items:center;gap:6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Income
+          </button>
           <button class="btn-export-statement" id="btn-open-export">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -1126,6 +1200,7 @@
 
     dashboardContent.innerHTML = html;
     dashboardContent.style.display = '';
+    renderQuickAddBar('dashboard-quick-add-wrap');
 
     // Animate stat numbers smoothly
     animateNumber($('#stat-val-spent'), totalSpent, formatCurrency);
@@ -1143,6 +1218,14 @@
           switchView('chat');
           composerInput.focus();
         }
+      });
+    }
+
+    // Wire up Add Income button
+    const addIncomeBtn = $('#btn-open-add-income');
+    if (addIncomeBtn) {
+      addIncomeBtn.addEventListener('click', () => {
+        openIncomeModal();
       });
     }
 
@@ -1397,12 +1480,15 @@
 
   // ---------- Udhar ----------
 
+  let cachedUdharData = null;
+
   async function loadUdhar() {
     udharLoader.style.display = '';
     udharContent.style.display = 'none';
 
     try {
       const data = await api('/api/udhar');
+      cachedUdharData = data;
       renderUdhar(data);
     } catch (err) {
       udharContent.innerHTML =
@@ -1418,6 +1504,12 @@
     const totalBorrowed = data.total_borrowed || 0;
     const net = typeof data.net === 'number' ? data.net : (totalLent - totalBorrowed);
     const persons = data.persons || data.people || [];
+
+    // Populate person datalist for autocomplete
+    const dl = $('#udhar-person-datalist');
+    if (dl) {
+      dl.innerHTML = persons.map((p) => `<option value="${escapeHtml(p.name || p.person_name)}"></option>`).join('');
+    }
 
     let html = '';
 
@@ -1479,7 +1571,10 @@
           <div style="text-align:right;">
             <span class="udhar-person-amount ${colorClass}">${formatCurrency(Math.abs(pNet))}</span>
             <div style="font-size:0.72rem;color:var(--text-tertiary);">${pNet > 0 ? 'Owes you' : (pNet < 0 ? 'You owe' : 'Settled')}</div>
-            ${pNet > 0 ? `<button class="btn-secondary btn-sm btn-nudge-reminder" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" style="margin-top:6px;font-size:11px;padding:3px 8px;">Send reminder</button>` : ''}
+            <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:6px;">
+              <button class="btn-secondary btn-sm btn-open-ledger" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" style="font-size:11px;padding:3px 8px;">Ledger</button>
+              ${pNet > 0 ? `<button class="btn-secondary btn-sm btn-nudge-reminder" data-person-key="${escapeHtml(p.person_key || name.toLowerCase())}" style="font-size:11px;padding:3px 8px;">Send reminder</button>` : ''}
+            </div>
           </div>
         </div>`;
       });
@@ -1490,6 +1585,16 @@
 
     udharContent.innerHTML = html;
     udharContent.style.display = '';
+
+    // Attach Ledger button handlers
+    udharContent.querySelectorAll('.btn-open-ledger').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pKey = btn.dataset.personKey;
+        const person = persons.find((x) => (x.person_key || (x.name || x.person_name || '').toLowerCase()) === pKey);
+        if (person) openUdharLedgerModal(person);
+      });
+    });
 
     // Attach reminder click handlers
     udharContent.querySelectorAll('.btn-nudge-reminder').forEach((btn) => {
@@ -1952,23 +2057,40 @@
     });
   }
 
-  // ---------- Modals & Tier 1 Feature Handlers ----------
+  // ---------- Modals & Form State Management ----------
+  const modalDirtyCheckers = new Map();
 
-  function openModal(id) {
+  function openModal(id, dirtyCheckFn = null) {
     const m = $(id);
-    if (m) m.style.display = 'flex';
+    if (!m) return;
+    m.style.display = 'flex';
+    if (dirtyCheckFn) {
+      modalDirtyCheckers.set(id, dirtyCheckFn);
+    } else {
+      modalDirtyCheckers.delete(id);
+    }
   }
 
-  function closeModal(id) {
+  function closeModal(id, force = false) {
     const m = $(id);
-    if (m) m.style.display = 'none';
+    if (!m || m.style.display === 'none') return;
+    const dirtyFn = modalDirtyCheckers.get(id);
+    if (!force && dirtyFn && dirtyFn()) {
+      if (!confirm('You have unsaved changes. Are you sure you want to close?')) {
+        return;
+      }
+    }
+    m.style.display = 'none';
+    modalDirtyCheckers.delete(id);
   }
 
-  // Backdrop click & Escape key to close modals
+  // Backdrop click & Escape key to close modals with dirty warning
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       $$('.modal-overlay').forEach((m) => {
-        m.style.display = 'none';
+        if (m.style.display === 'flex' || m.style.display === 'block') {
+          closeModal('#' + m.id);
+        }
       });
     }
   });
@@ -1976,7 +2098,7 @@
   $$('.modal-overlay').forEach((modal) => {
     modal.addEventListener('click', (e) => {
       if (e.target === modal) {
-        modal.style.display = 'none';
+        closeModal('#' + modal.id);
       }
     });
   });
@@ -3001,10 +3123,13 @@
 
   async function loadSettings() {
     try {
-      const [displayData, categoriesData, recurringData] = await Promise.all([
+      const [displayData, categoriesData, recurringData, budgetsData, goalsData, profileData] = await Promise.all([
         api('/api/user/display').catch(() => ({})),
         api('/api/categories').catch(() => ({ categories: [], custom: [] })),
         api('/api/recurring').catch(() => ({ recurring: [] })),
+        api('/api/budgets').catch(() => ({ budgets: [] })),
+        api('/api/goals').catch(() => ({ goals: [] })),
+        api('/api/profile').catch(() => ({})),
       ]);
 
       // 1. Email and Username
@@ -3048,8 +3173,57 @@
       // 4. Custom Categories
       renderSettingsCategories(categoriesData.custom || []);
 
-      // 5. Recurring Bills List
+      // 5. Budget Manager
+      renderSettingsBudgets(budgetsData.budgets || [], categoriesData.categories || []);
+
+      // 6. Savings Goals
+      renderSettingsGoals(goalsData.goals || []);
+
+      // 7. Recurring Bills List
       renderSettingsRecurring(recurringData.recurring || []);
+
+      // 8. Financial Profile (Living Situation & Risk Comfort)
+      const livingSelect = $('#profile-living-situation');
+      const riskSelect = $('#profile-risk-comfort');
+      const savedIndicator = $('#profile-saved-indicator');
+
+      if (livingSelect && profileData && profileData.living_situation) {
+        livingSelect.value = profileData.living_situation;
+      }
+      if (riskSelect && profileData && profileData.risk_comfort) {
+        riskSelect.value = profileData.risk_comfort;
+      }
+
+      async function saveFinancialProfile() {
+        const living = livingSelect?.value;
+        const risk = riskSelect?.value;
+        try {
+          await api('/api/profile', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              living_situation: living,
+              risk_comfort: risk,
+            }),
+          });
+          if (savedIndicator) {
+            savedIndicator.style.display = 'inline-block';
+            setTimeout(() => {
+              savedIndicator.style.display = 'none';
+            }, 2500);
+          }
+        } catch (err) {
+          showToast(err.message || 'Failed to update financial profile', 'error');
+        }
+      }
+
+      if (livingSelect && !livingSelect._boundChange) {
+        livingSelect._boundChange = true;
+        livingSelect.addEventListener('change', saveFinancialProfile);
+      }
+      if (riskSelect && !riskSelect._boundChange) {
+        riskSelect._boundChange = true;
+        riskSelect.addEventListener('change', saveFinancialProfile);
+      }
 
     } catch (err) {
       console.error('loadSettings error:', err);
@@ -3368,42 +3542,1806 @@
     });
   }
 
-  // Recurring in Settings
-  function renderSettingsRecurring(bills) {
-    const listEl = $('#settings-recurring-list');
-    if (!listEl) return;
+  // ================================================================
+  // ---------- MANUAL ENTRY & MANAGEMENT SUITE ----------
+  // ================================================================
 
-    const activeBills = bills.filter((b) => b.active);
-    if (activeBills.length === 0) {
-      listEl.innerHTML = '<span style="color:var(--text-tertiary);font-size:12px;">No active recurring bills scheduled.</span>';
+  let allCachedCategories = [];
+
+  async function loadAllCategories() {
+    try {
+      const data = await api('/api/categories');
+      allCachedCategories = data.categories || [];
+    } catch (e) {
+      allCachedCategories = [
+        'food', 'groceries', 'travel', 'rent', 'bills', 'entertainment',
+        'shopping', 'health', 'other', 'eating out', 'utilities',
+        'personal care', 'emergency fund', 'sip / investments', 'miscellaneous'
+      ];
+    }
+    populateCategoryDropdowns();
+    return allCachedCategories;
+  }
+
+  function populateCategoryDropdowns() {
+    const dropdowns = [
+      '#qa-category',
+      '#expense-category',
+      '#tx-category-filter',
+      '#budget-add-category',
+      '#rec-edit-category',
+      '#rec-category'
+    ];
+    const cats = allCachedCategories.length > 0 ? allCachedCategories : ['food', 'travel', 'shopping', 'bills', 'other'];
+
+    dropdowns.forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      const curVal = el.value;
+      let html = '';
+      if (sel === '#tx-category-filter') {
+        html = '<option value="">All Categories</option>';
+      }
+      cats.forEach((c) => {
+        const cap = c.charAt(0).toUpperCase() + c.slice(1);
+        html += `<option value="${escapeHtml(c)}">${escapeHtml(cap)}</option>`;
+      });
+      el.innerHTML = html;
+      if (curVal) el.value = curVal;
+    });
+  }
+
+  // ---------- Quick-Add Bar ----------
+  function renderQuickAddBar(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const formId = containerId + '-form';
+    const amtId = containerId + '-amt';
+    const catId = containerId + '-cat';
+    const noteId = containerId + '-note';
+    const dateId = containerId + '-date';
+    const tagId = containerId + '-tag';
+    const btnId = containerId + '-btn';
+
+    let catOpts = '';
+    const cats = allCachedCategories.length > 0 ? allCachedCategories : [
+      'food', 'groceries', 'travel', 'rent', 'bills', 'entertainment',
+      'shopping', 'health', 'other'
+    ];
+    cats.forEach((c) => {
+      const cap = c.charAt(0).toUpperCase() + c.slice(1);
+      catOpts += `<option value="${escapeHtml(c)}">${escapeHtml(cap)}</option>`;
+    });
+
+    container.innerHTML = `
+      <div class="quick-add-bar-wrap">
+        <div class="quick-add-header">
+          <span class="quick-add-title">Quick Log Expense</span>
+        </div>
+        <form class="quick-add-form" id="${formId}" onsubmit="return false;">
+          <div class="quick-add-field quick-add-amount-wrap">
+            <label for="${amtId}">Amount *</label>
+            <input type="number" id="${amtId}" class="form-input quick-add-input" placeholder="Rs 0.00" step="0.01" min="0.01" required>
+          </div>
+          <div class="quick-add-field">
+            <label for="${catId}">Category *</label>
+            <select id="${catId}" class="form-input quick-add-select" required>
+              ${catOpts}
+            </select>
+          </div>
+          <div class="quick-add-field quick-add-note-wrap">
+            <label for="${noteId}">Note</label>
+            <input type="text" id="${noteId}" class="form-input quick-add-input" placeholder="e.g. Lunch with team">
+          </div>
+          <div class="quick-add-field quick-add-date-wrap">
+            <label for="${dateId}">Date</label>
+            <input type="date" id="${dateId}" class="form-input quick-add-input" value="${todayStr}" required>
+          </div>
+          <div class="quick-add-field quick-add-tag-wrap">
+            <label for="${tagId}">Tag</label>
+            <input type="text" id="${tagId}" class="form-input quick-add-input" placeholder="e.g. office">
+          </div>
+          <div class="quick-add-btn-wrap">
+            <button type="submit" class="btn-primary quick-add-submit-btn" id="${btnId}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Add</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    const form = document.getElementById(formId);
+    if (!form) return;
+    form.addEventListener('submit', async () => {
+      const amtInput = document.getElementById(amtId);
+      const catSelect = document.getElementById(catId);
+      const noteInput = document.getElementById(noteId);
+      const dateInput = document.getElementById(dateId);
+      const tagInput = document.getElementById(tagId);
+      const submitBtn = document.getElementById(btnId);
+
+      const amount = parseFloat(amtInput?.value);
+      const category = catSelect?.value;
+      const note = noteInput?.value?.trim() || '';
+      const entryDate = dateInput?.value || todayStr;
+      const rawTag = tagInput?.value?.trim() || '';
+      const tags = rawTag ? rawTag.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : [];
+
+      if (isNaN(amount) || amount <= 0) {
+        showToast('Please enter a valid expense amount', 'error');
+        if (amtInput) amtInput.focus();
+        return;
+      }
+      if (!category) {
+        showToast('Please choose a category', 'error');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span>Saving...</span>';
+
+      try {
+        await api('/api/transactions', {
+          method: 'POST',
+          body: JSON.stringify({
+            amount,
+            category,
+            note,
+            entry_date: entryDate,
+            tags,
+          }),
+        });
+
+        showToast(`Logged Rs ${amount.toFixed(2)} under ${category}`, 'success');
+        showUndoToast('Expense logged');
+        if (amtInput) amtInput.value = '';
+        if (noteInput) noteInput.value = '';
+        if (tagInput) tagInput.value = '';
+        if (dateInput) dateInput.value = todayStr;
+
+        if (currentView === 'transactions') loadTransactionsView();
+        if (currentView === 'dashboard') loadDashboard();
+        loadGlanceData();
+      } catch (err) {
+        showToast(err.message || 'Failed to log expense', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Add</span>
+        `;
+      }
+    });
+  }
+
+  // ---------- Full Transactions View ----------
+  let txSelectedIds = new Set();
+  let currentTransactionsData = [];
+
+  async function loadTransactionsView() {
+    console.log("LOAD_TRANSACTIONS_VIEW_START");
+    window.loadTransactionsView = loadTransactionsView;
+    renderQuickAddBar('tx-quick-add-wrap');
+    populateCategoryDropdowns();
+
+    const loader = $('#tx-loader');
+    const tableContainer = $('#tx-table-container');
+    const totalCountEl = $('#tx-total-count');
+    const totalSumEl = $('#tx-total-sum');
+
+    if (loader) loader.style.display = 'flex';
+
+    // Parse filters
+    const query = $('#tx-search-input')?.value?.trim() || '';
+    const category = $('#tx-category-filter')?.value || '';
+    const preset = $('#tx-date-preset')?.value || 'this_month';
+    const sortVal = $('#tx-sort-select')?.value || 'date_desc';
+
+    let sortBy = 'date';
+    let sortOrder = 'desc';
+    if (sortVal === 'date_asc') { sortBy = 'date'; sortOrder = 'asc'; }
+    else if (sortVal === 'amount_desc') { sortBy = 'amount'; sortOrder = 'desc'; }
+    else if (sortVal === 'amount_asc') { sortBy = 'amount'; sortOrder = 'asc'; }
+    else if (sortVal === 'category_asc') { sortBy = 'category'; sortOrder = 'asc'; }
+
+    let startDate = null;
+    let endDate = null;
+    const now = new Date();
+
+    const pad = (n) => String(n).padStart(2, '0');
+    if (preset === 'this_month') {
+      const y = now.getFullYear();
+      const m = now.getMonth();
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      startDate = `${y}-${pad(m + 1)}-01`;
+      endDate = `${y}-${pad(m + 1)}-${pad(lastDay)}`;
+    } else if (preset === 'last_month') {
+      const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const y = prev.getFullYear();
+      const m = prev.getMonth();
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      startDate = `${y}-${pad(m + 1)}-01`;
+      endDate = `${y}-${pad(m + 1)}-${pad(lastDay)}`;
+    } else if (preset === 'custom') {
+      startDate = $('#tx-date-from')?.value || null;
+      endDate = $('#tx-date-to')?.value || null;
+    }
+
+    try {
+      const params = new URLSearchParams();
+      if (query) params.append('query', query);
+      if (category) params.append('category', category);
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      params.append('sort_by', sortBy);
+      params.append('sort_order', sortOrder);
+      params.append('limit', '100');
+
+      const data = await api('/api/transactions?' + params.toString());
+      currentTransactionsData = data.transactions || [];
+
+      if (totalCountEl) totalCountEl.textContent = `Showing ${currentTransactionsData.length} transaction${currentTransactionsData.length === 1 ? '' : 's'}`;
+      const sum = currentTransactionsData.reduce((acc, t) => acc + (parseFloat(t.amount) || 0), 0);
+      if (totalSumEl) totalSumEl.textContent = `Total: ${formatCurrency(sum)}`;
+
+      renderTransactionsTable(currentTransactionsData);
+    } catch (err) {
+      if (tableContainer) {
+        tableContainer.innerHTML = `<div class="empty-state" style="padding:32px;"><p style="color:var(--danger);">Failed to load transactions: ${escapeHtml(err.message)}</p></div>`;
+      }
+    } finally {
+      if (loader) loader.style.display = 'none';
+      updateTxBulkBar();
+    }
+  }
+
+  function renderTransactionsTable(transactions) {
+    const tableContainer = $('#tx-table-container');
+    if (!tableContainer) return;
+
+    if (transactions.length === 0) {
+      tableContainer.innerHTML = `
+        <div class="empty-state" style="padding:48px 20px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:36px;height:36px;opacity:0.25;margin-bottom:8px;">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <line x1="6" y1="12" x2="18" y2="12"/>
+          </svg>
+          <p>No transactions found matching your criteria.</p>
+        </div>
+      `;
       return;
     }
 
-    listEl.innerHTML = activeBills.map((b) => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-subtle);font-size:13px;">
-        <div>
-          <strong>${escapeHtml(b.name)}</strong>
-          <span style="color:var(--text-secondary);margin-left:6px;">(${escapeHtml(b.category || 'other')} · ${escapeHtml(b.frequency)})</span>
-          <div style="font-size:11px;color:var(--text-tertiary);">Next due: ${formatDate(b.next_due_date)}</div>
+    let rowsHtml = '';
+    transactions.forEach((tx) => {
+      const isSelected = txSelectedIds.has(tx.id);
+      const tagsList = Array.isArray(tx.tags) ? tx.tags : [];
+      const tagsHtml = tagsList.map((tag) => `<span class="txn-tag-chip">#${escapeHtml(tag)}</span>`).join('');
+      const merchantDisplay = tx.merchant ? escapeHtml(tx.merchant) : '<span style="color:var(--text-tertiary);">--</span>';
+
+      rowsHtml += `
+        <tr data-id="${tx.id}">
+          <td style="width:36px;text-align:center;">
+            <input type="checkbox" class="tx-select-cb" data-id="${tx.id}" ${isSelected ? 'checked' : ''}>
+          </td>
+          <td style="white-space:nowrap;font-size:12px;color:var(--text-secondary);">${formatDate(tx.date)}</td>
+          <td><strong>${merchantDisplay}</strong></td>
+          <td><span class="txn-category">${escapeHtml(tx.category)}</span></td>
+          <td style="color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            ${escapeHtml(tx.note || '')}
+            ${tagsHtml ? `<div style="margin-top:2px;">${tagsHtml}</div>` : ''}
+          </td>
+          <td style="text-align:right;font-weight:600;white-space:nowrap;">${formatCurrency(tx.amount)}</td>
+          <td style="width:90px;text-align:right;white-space:nowrap;">
+            <div class="txn-row-actions">
+              <button class="btn-icon-action btn-edit-tx" data-id="${tx.id}" title="Edit transaction">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="btn-icon-action btn-add-bill-tx" data-tx-id="${tx.id}" title="Attach bill/receipt">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <button class="btn-icon-action danger btn-del-tx" data-id="${tx.id}" title="Delete transaction">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+
+    tableContainer.innerHTML = `
+      <table class="txn-manage-table">
+        <thead>
+          <tr>
+            <th style="width:36px;text-align:center;"><input type="checkbox" id="tx-select-all-cb"></th>
+            <th>Date</th>
+            <th>Merchant</th>
+            <th>Category</th>
+            <th>Note / Tags</th>
+            <th style="text-align:right;">Amount</th>
+            <th style="text-align:right;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
+    `;
+
+    // Row selection checkboxes
+    tableContainer.querySelectorAll('.tx-select-cb').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const id = parseInt(cb.dataset.id, 10);
+        if (cb.checked) txSelectedIds.add(id);
+        else txSelectedIds.delete(id);
+        updateTxBulkBar();
+      });
+    });
+
+    // Select-all checkbox
+    const selectAllCb = document.getElementById('tx-select-all-cb');
+    if (selectAllCb) {
+      selectAllCb.addEventListener('change', () => {
+        const isChecked = selectAllCb.checked;
+        tableContainer.querySelectorAll('.tx-select-cb').forEach((cb) => {
+          cb.checked = isChecked;
+          const id = parseInt(cb.dataset.id, 10);
+          if (isChecked) txSelectedIds.add(id);
+          else txSelectedIds.delete(id);
+        });
+        updateTxBulkBar();
+      });
+    }
+
+    // Edit expense row handlers
+    tableContainer.querySelectorAll('.btn-edit-tx').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const tx = currentTransactionsData.find((t) => t.id === id);
+        if (tx) openExpenseModal(tx);
+      });
+    });
+
+    // Delete expense row handlers
+    tableContainer.querySelectorAll('.btn-del-tx').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const tx = currentTransactionsData.find((t) => t.id === id);
+        const amtStr = tx ? formatCurrency(tx.amount) : 'this expense';
+        openSimpleConfirmModal(
+          'Delete Expense',
+          `Are you sure you want to delete ${amtStr}?`,
+          async () => {
+            await api(`/api/transactions/${id}`, { method: 'DELETE' });
+            showToast('Expense deleted', 'success');
+            showUndoToast('Expense deleted');
+            txSelectedIds.delete(id);
+            loadTransactionsView();
+            loadDashboard();
+            loadGlanceData();
+          }
+        );
+      });
+    });
+
+    // Add bill on transaction
+    tableContainer.querySelectorAll('.btn-add-bill-tx').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openAddBillModal(btn.dataset.txId);
+      });
+    });
+  }
+
+  function updateTxBulkBar() {
+    const bulkBar = $('#tx-bulk-bar');
+    const bulkCount = $('#tx-bulk-count');
+    if (!bulkBar) return;
+
+    if (txSelectedIds.size > 0) {
+      bulkBar.style.display = 'flex';
+      if (bulkCount) bulkCount.textContent = `${txSelectedIds.size} transaction${txSelectedIds.size === 1 ? '' : 's'} selected`;
+    } else {
+      bulkBar.style.display = 'none';
+    }
+  }
+
+  // Bulk delete modal
+  const bulkDeleteBtn = $('#tx-bulk-delete-btn');
+  const bulkDeleteDesc = $('#bulk-delete-desc');
+  const bulkDeleteTypedWrap = $('#bulk-delete-typed-wrap');
+  const bulkDeleteTypedInput = $('#bulk-delete-typed-input');
+  const bulkDeleteActionBtn = $('#bulk-delete-action-btn');
+  const bulkDeleteClose = $('#bulk-delete-close');
+  const bulkDeleteCancel = $('#bulk-delete-cancel-btn');
+
+  if (bulkDeleteClose) bulkDeleteClose.addEventListener('click', () => closeModal('#modal-bulk-delete', true));
+  if (bulkDeleteCancel) bulkDeleteCancel.addEventListener('click', () => closeModal('#modal-bulk-delete', true));
+
+  if (bulkDeleteBtn) {
+    bulkDeleteBtn.addEventListener('click', () => {
+      const count = txSelectedIds.size;
+      if (count === 0) return;
+
+      if (bulkDeleteDesc) {
+        bulkDeleteDesc.textContent = `Are you sure you want to permanently delete ${count} transaction${count === 1 ? '' : 's'}?`;
+      }
+
+      if (count > 10) {
+        if (bulkDeleteTypedWrap) bulkDeleteTypedWrap.style.display = 'block';
+        if (bulkDeleteTypedInput) {
+          bulkDeleteTypedInput.value = '';
+          bulkDeleteTypedInput.oninput = () => {
+            if (bulkDeleteActionBtn) {
+              bulkDeleteActionBtn.disabled = bulkDeleteTypedInput.value.trim() !== 'DELETE';
+            }
+          };
+        }
+        if (bulkDeleteActionBtn) bulkDeleteActionBtn.disabled = true;
+      } else {
+        if (bulkDeleteTypedWrap) bulkDeleteTypedWrap.style.display = 'none';
+        if (bulkDeleteActionBtn) bulkDeleteActionBtn.disabled = false;
+      }
+
+      openModal('#modal-bulk-delete');
+    });
+  }
+
+  if (bulkDeleteActionBtn) {
+    bulkDeleteActionBtn.addEventListener('click', async () => {
+      const ids = Array.from(txSelectedIds);
+      if (ids.length === 0) return;
+
+      bulkDeleteActionBtn.disabled = true;
+      bulkDeleteActionBtn.textContent = 'Deleting...';
+
+      try {
+        const res = await api('/api/transactions/bulk-delete', {
+          method: 'POST',
+          body: JSON.stringify({ transaction_ids: ids }),
+        });
+
+        showToast(`Deleted ${res.deleted_count} transactions`, 'success');
+        txSelectedIds.clear();
+        closeModal('#modal-bulk-delete', true);
+        loadTransactionsView();
+        loadDashboard();
+        loadGlanceData();
+      } catch (err) {
+        showToast(err.message || 'Bulk delete failed', 'error');
+      } finally {
+        bulkDeleteActionBtn.disabled = false;
+        bulkDeleteActionBtn.textContent = 'Delete Selected';
+      }
+    });
+  }
+
+  // Transaction filter event listeners
+  const txSearchInput = $('#tx-search-input');
+  if (txSearchInput) {
+    let debounceTimer = null;
+    txSearchInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => loadTransactionsView(), 300);
+    });
+  }
+
+  const txCatFilter = $('#tx-category-filter');
+  if (txCatFilter) {
+    txCatFilter.addEventListener('change', () => loadTransactionsView());
+  }
+
+  const txDatePreset = $('#tx-date-preset');
+  const txCustomDateRow = $('#tx-custom-date-row');
+  if (txDatePreset) {
+    txDatePreset.addEventListener('change', () => {
+      if (txCustomDateRow) {
+        txCustomDateRow.style.display = txDatePreset.value === 'custom' ? 'block' : 'none';
+      }
+      if (txDatePreset.value !== 'custom') {
+        loadTransactionsView();
+      }
+    });
+  }
+
+  const txDateFrom = $('#tx-date-from');
+  const txDateTo = $('#tx-date-to');
+  if (txDateFrom) txDateFrom.addEventListener('change', () => loadTransactionsView());
+  if (txDateTo) txDateTo.addEventListener('change', () => loadTransactionsView());
+
+  const txSortSelect = $('#tx-sort-select');
+  if (txSortSelect) txSortSelect.addEventListener('change', () => loadTransactionsView());
+
+  // ---------- Add / Edit Expense Modal ----------
+  let expenseFormInitial = '';
+
+  function openExpenseModal(tx = null) {
+    populateCategoryDropdowns();
+    const modal = $('#modal-expense-entry');
+    const titleEl = $('#expense-modal-title');
+    const editIdInput = $('#expense-edit-id');
+    const amtInput = $('#expense-amount');
+    const catSelect = $('#expense-category');
+    const dateInput = $('#expense-date');
+    const merchInput = $('#expense-merchant');
+    const noteInput = $('#expense-note');
+    const tagsInput = $('#expense-tags');
+    const errEl = $('#expense-modal-error');
+
+    if (!modal) return;
+    if (errEl) errEl.style.display = 'none';
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    if (tx) {
+      if (titleEl) titleEl.textContent = 'Edit Expense';
+      if (editIdInput) editIdInput.value = tx.id;
+      if (amtInput) amtInput.value = tx.amount;
+      if (catSelect) catSelect.value = (tx.category || '').toLowerCase();
+      if (dateInput) {
+        dateInput.value = tx.date ? tx.date.slice(0, 10) : todayStr;
+      }
+      if (merchInput) merchInput.value = tx.merchant || '';
+      if (noteInput) noteInput.value = tx.note || '';
+      if (tagsInput) tagsInput.value = (tx.tags || []).join(', ');
+    } else {
+      if (titleEl) titleEl.textContent = 'Add Expense';
+      if (editIdInput) editIdInput.value = '';
+      if (amtInput) amtInput.value = '';
+      if (dateInput) dateInput.value = todayStr;
+      if (merchInput) merchInput.value = '';
+      if (noteInput) noteInput.value = '';
+      if (tagsInput) tagsInput.value = '';
+    }
+
+    expenseFormInitial = JSON.stringify({
+      amt: amtInput?.value,
+      cat: catSelect?.value,
+      date: dateInput?.value,
+      merch: merchInput?.value,
+      note: noteInput?.value,
+      tags: tagsInput?.value,
+    });
+
+    openModal('#modal-expense-entry', () => {
+      const cur = JSON.stringify({
+        amt: amtInput?.value,
+        cat: catSelect?.value,
+        date: dateInput?.value,
+        merch: merchInput?.value,
+        note: noteInput?.value,
+        tags: tagsInput?.value,
+      });
+      return cur !== expenseFormInitial;
+    });
+  }
+
+  const btnOpenAddExpenseModal = $('#btn-open-add-expense-modal');
+  if (btnOpenAddExpenseModal) {
+    btnOpenAddExpenseModal.addEventListener('click', () => openExpenseModal(null));
+  }
+
+  const expenseModalClose = $('#expense-modal-close');
+  const expenseCancelBtn = $('#expense-cancel-btn');
+  const expenseSaveBtn = $('#expense-save-btn');
+
+  if (expenseModalClose) expenseModalClose.addEventListener('click', () => closeModal('#modal-expense-entry'));
+  if (expenseCancelBtn) expenseCancelBtn.addEventListener('click', () => closeModal('#modal-expense-entry'));
+
+  if (expenseSaveBtn) {
+    expenseSaveBtn.addEventListener('click', async () => {
+      const editId = $('#expense-edit-id')?.value;
+      const amtInput = $('#expense-amount');
+      const catSelect = $('#expense-category');
+      const dateInput = $('#expense-date');
+      const merchInput = $('#expense-merchant');
+      const noteInput = $('#expense-note');
+      const tagsInput = $('#expense-tags');
+      const errEl = $('#expense-modal-error');
+
+      const amount = parseFloat(amtInput?.value);
+      const category = catSelect?.value;
+      const entryDate = dateInput?.value;
+      const merchant = merchInput?.value?.trim() || null;
+      const note = noteInput?.value?.trim() || '';
+      const rawTags = tagsInput?.value?.trim() || '';
+      const tags = rawTags ? rawTags.split(/[\s,]+/).map((t) => t.trim().replace(/^#/, '')).filter(Boolean) : [];
+
+      if (isNaN(amount) || amount <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid amount greater than zero.'; errEl.style.display = 'block'; }
+        if (amtInput) amtInput.focus();
+        return;
+      }
+      if (!category) {
+        if (errEl) { errEl.textContent = 'Please select a category.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (!entryDate) {
+        if (errEl) { errEl.textContent = 'Please pick a transaction date.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      expenseSaveBtn.disabled = true;
+      expenseSaveBtn.textContent = 'Saving...';
+
+      try {
+        if (editId) {
+          await api(`/api/transactions/${editId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              amount,
+              category,
+              note,
+              entry_date: entryDate,
+              merchant,
+              tags,
+            }),
+          });
+          showToast('Expense updated successfully', 'success');
+          showUndoToast('Expense updated');
+        } else {
+          await api('/api/transactions', {
+            method: 'POST',
+            body: JSON.stringify({
+              amount,
+              category,
+              note,
+              entry_date: entryDate,
+              merchant,
+              tags,
+            }),
+          });
+          showToast(`Logged Rs ${amount.toFixed(2)} under ${category}`, 'success');
+          showUndoToast('Expense logged');
+        }
+
+        closeModal('#modal-expense-entry', true);
+        if (currentView === 'transactions') loadTransactionsView();
+        if (currentView === 'dashboard') loadDashboard();
+        loadGlanceData();
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || 'Failed to save expense';
+          errEl.style.display = 'block';
+        }
+      } finally {
+        expenseSaveBtn.disabled = false;
+        expenseSaveBtn.textContent = 'Save Expense';
+      }
+    });
+  }
+
+  // ---------- Income Modal ----------
+  let incomeFormInitial = '';
+  function openIncomeModal() {
+    const modal = $('#modal-income-entry');
+    const amtInput = $('#income-amount');
+    const srcInput = $('#income-source');
+    const dateInput = $('#income-date');
+    const errEl = $('#income-modal-error');
+
+    if (!modal) return;
+    if (errEl) errEl.style.display = 'none';
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (amtInput) amtInput.value = '';
+    if (srcInput) srcInput.value = '';
+    if (dateInput) dateInput.value = todayStr;
+
+    incomeFormInitial = JSON.stringify({
+      amt: amtInput?.value,
+      src: srcInput?.value,
+      date: dateInput?.value,
+    });
+
+    openModal('#modal-income-entry', () => {
+      const cur = JSON.stringify({
+        amt: amtInput?.value,
+        src: srcInput?.value,
+        date: dateInput?.value,
+      });
+      return cur !== incomeFormInitial;
+    });
+
+    if (amtInput) amtInput.focus();
+  }
+
+  const incomeModalClose = $('#income-modal-close');
+  const incomeCancelBtn = $('#income-cancel-btn');
+  const incomeSaveBtn = $('#income-save-btn');
+
+  if (incomeModalClose) incomeModalClose.addEventListener('click', () => closeModal('#modal-income-entry'));
+  if (incomeCancelBtn) incomeCancelBtn.addEventListener('click', () => closeModal('#modal-income-entry'));
+
+  if (incomeSaveBtn) {
+    incomeSaveBtn.addEventListener('click', async () => {
+      const amtInput = $('#income-amount');
+      const srcInput = $('#income-source');
+      const dateInput = $('#income-date');
+      const errEl = $('#income-modal-error');
+
+      const amount = parseFloat(amtInput?.value);
+      const source = srcInput?.value?.trim() || 'salary';
+      const entryDate = dateInput?.value;
+
+      if (isNaN(amount) || amount <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid amount greater than zero.'; errEl.style.display = 'block'; }
+        if (amtInput) amtInput.focus();
+        return;
+      }
+      if (!entryDate) {
+        if (errEl) { errEl.textContent = 'Please pick a date for the income entry.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      incomeSaveBtn.disabled = true;
+      incomeSaveBtn.textContent = 'Saving...';
+
+      try {
+        await api('/api/income', {
+          method: 'POST',
+          body: JSON.stringify({
+            amount,
+            source,
+            entry_date: entryDate,
+          }),
+        });
+
+        showToast(`Logged Rs ${amount.toFixed(2)} income (${source})`, 'success');
+        closeModal('#modal-income-entry', true);
+
+        if (currentView === 'dashboard') loadDashboard();
+        if (currentView === 'calendar') loadCalendar();
+        if (currentView === 'insights') loadInsights();
+        loadGlanceData();
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || 'Failed to save income';
+          errEl.style.display = 'block';
+        }
+      } finally {
+        incomeSaveBtn.disabled = false;
+        incomeSaveBtn.textContent = 'Save Income';
+      }
+    });
+  }
+
+  // ---------- Budget Manager in Settings ----------
+  function renderSettingsBudgets(budgets, allCats) {
+    const container = $('#budget-manager-container');
+    if (!container) return;
+
+    if (!budgets || budgets.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-tertiary);font-size:12px;">No budget limits configured yet. Click "Add Budget" to set category limits.</span>';
+      return;
+    }
+
+    let rowsHtml = '';
+    budgets.forEach((b) => {
+      const cat = b.category || '';
+      const limit = b.monthly_limit || 0;
+      const spent = b.current_spend || 0;
+      const hasBudget = b.has_budget;
+      const isCustom = b.is_custom;
+      const isRollover = b.rollover_enabled;
+
+      let statusHtml = '<span style="color:var(--text-tertiary);">No limit</span>';
+      if (hasBudget) {
+        const rem = limit - spent;
+        if (rem >= 0) {
+          statusHtml = `<span style="color:var(--success);font-weight:600;">${formatCurrency(rem)} left</span>`;
+        } else {
+          statusHtml = `<span style="color:var(--danger);font-weight:600;">${formatCurrency(Math.abs(rem))} over</span>`;
+        }
+      }
+
+      rowsHtml += `
+        <tr data-cat="${escapeHtml(cat)}">
+          <td>
+            <strong>${escapeHtml(cat.charAt(0).toUpperCase() + cat.slice(1))}</strong>
+            ${isCustom ? '<span style="font-size:10px;padding:2px 6px;border-radius:var(--radius-pill);background:var(--bg-elevated);color:var(--text-tertiary);margin-left:6px;">Custom</span>' : ''}
+          </td>
+          <td>
+            <div class="budget-inline-limit-wrap">
+              <input type="number" class="budget-inline-limit-input" data-cat="${escapeHtml(cat)}" value="${limit}" min="0" step="50">
+              <button class="btn-primary btn-sm btn-save-budget-inline" data-cat="${escapeHtml(cat)}" style="padding:4px 8px;font-size:11px;">Save</button>
+            </div>
+          </td>
+          <td style="color:var(--text-secondary);">${formatCurrency(spent)}</td>
+          <td>${statusHtml}</td>
+          <td>
+            <label class="rollover-switch-label" style="transform:scale(0.85);transform-origin:left center;">
+              <input type="checkbox" class="budget-mgr-rollover-cb" data-cat="${escapeHtml(cat)}" ${isRollover ? 'checked' : ''}>
+              <span class="rollover-slider"></span>
+              <span class="rollover-switch-text">${isRollover ? 'On' : 'Off'}</span>
+            </label>
+          </td>
+          <td style="text-align:right;">
+            ${hasBudget ? `
+              <button class="btn-icon-action danger btn-del-budget-row" data-cat="${escapeHtml(cat)}" title="Remove budget limit">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            ` : ''}
+          </td>
+        </tr>
+      `;
+    });
+
+    container.innerHTML = `
+      <table class="budget-mgr-table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Monthly Limit</th>
+            <th>Spend This Month</th>
+            <th>Remaining</th>
+            <th>Rollover</th>
+            <th style="text-align:right;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
+    `;
+
+    // Inline Save button
+    container.querySelectorAll('.btn-save-budget-inline').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cat = btn.dataset.cat;
+        const input = container.querySelector(`.budget-inline-limit-input[data-cat="${cat}"]`);
+        const val = parseFloat(input?.value);
+        if (isNaN(val) || val < 0) {
+          showToast('Please enter a valid budget limit', 'error');
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = '...';
+        try {
+          await api(`/api/budgets/${encodeURIComponent(cat)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ monthly_limit: val }),
+          });
+          showToast(`Budget for ${cat} updated to Rs ${val}`, 'success');
+          loadSettings();
+          loadDashboard();
+        } catch (err) {
+          showToast(err.message || 'Failed to update budget', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Save';
+        }
+      });
+    });
+
+    // Enter key on inline input
+    container.querySelectorAll('.budget-inline-limit-input').forEach((input) => {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const cat = input.dataset.cat;
+          const saveBtn = container.querySelector(`.btn-save-budget-inline[data-cat="${cat}"]`);
+          if (saveBtn) saveBtn.click();
+        }
+      });
+    });
+
+    // Rollover switch
+    container.querySelectorAll('.budget-mgr-rollover-cb').forEach((cb) => {
+      cb.addEventListener('change', async () => {
+        const cat = cb.dataset.cat;
+        const enabled = cb.checked;
+        const textSpan = cb.parentElement.querySelector('.rollover-switch-text');
+        if (textSpan) textSpan.textContent = enabled ? 'On' : 'Off';
+
+        try {
+          await api(`/api/budgets/${encodeURIComponent(cat)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ rollover_enabled: enabled }),
+          });
+          showToast(`Rollover for ${cat} ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        } catch (err) {
+          cb.checked = !enabled;
+          if (textSpan) textSpan.textContent = !enabled ? 'On' : 'Off';
+          showToast(err.message || 'Failed to toggle rollover', 'error');
+        }
+      });
+    });
+
+    // Delete budget limit
+    container.querySelectorAll('.btn-del-budget-row').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cat = btn.dataset.cat;
+        openSimpleConfirmModal(
+          'Delete Budget Limit',
+          `Are you sure you want to remove the monthly limit for "${cat}"?`,
+          async () => {
+            await api(`/api/budgets/${encodeURIComponent(cat)}`, { method: 'DELETE' });
+            showToast(`Budget limit for ${cat} removed`, 'success');
+            loadSettings();
+            loadDashboard();
+          }
+        );
+      });
+    });
+  }
+
+  // Add budget button in Settings
+  const btnAddBudgetRowTrigger = $('#btn-add-budget-row-trigger');
+  const budgetAddClose = $('#budget-add-close');
+  const budgetAddCancel = $('#budget-add-cancel-btn');
+  const budgetAddSave = $('#budget-add-save-btn');
+
+  if (budgetAddClose) budgetAddClose.addEventListener('click', () => closeModal('#modal-budget-add', true));
+  if (budgetAddCancel) budgetAddCancel.addEventListener('click', () => closeModal('#modal-budget-add', true));
+
+  if (btnAddBudgetRowTrigger) {
+    btnAddBudgetRowTrigger.addEventListener('click', () => {
+      populateCategoryDropdowns();
+      const limitInput = $('#budget-add-limit');
+      const rollInput = $('#budget-add-rollover');
+      const errEl = $('#budget-add-error');
+
+      if (limitInput) limitInput.value = '';
+      if (rollInput) rollInput.checked = false;
+      if (errEl) errEl.style.display = 'none';
+
+      openModal('#modal-budget-add');
+    });
+  }
+
+  if (budgetAddSave) {
+    budgetAddSave.addEventListener('click', async () => {
+      const cat = $('#budget-add-category')?.value;
+      const limitVal = parseFloat($('#budget-add-limit')?.value);
+      const rollover = $('#budget-add-rollover')?.checked || false;
+      const errEl = $('#budget-add-error');
+
+      if (!cat) {
+        if (errEl) { errEl.textContent = 'Please choose a category'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (isNaN(limitVal) || limitVal <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid monthly limit amount'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      budgetAddSave.disabled = true;
+      budgetAddSave.textContent = 'Saving...';
+
+      try {
+        await api('/api/budgets', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: cat,
+            monthly_limit: limitVal,
+            rollover_enabled: rollover,
+          }),
+        });
+        showToast(`Budget for ${cat} set to Rs ${limitVal}`, 'success');
+        closeModal('#modal-budget-add', true);
+        loadSettings();
+        loadDashboard();
+      } catch (err) {
+        if (errEl) { errEl.textContent = err.message || 'Failed to save budget'; errEl.style.display = 'block'; }
+      } finally {
+        budgetAddSave.disabled = false;
+        budgetAddSave.textContent = 'Save Budget';
+      }
+    });
+  }
+
+  // ---------- Savings Goals in Settings ----------
+  let cachedGoalsList = [];
+
+  function renderSettingsGoals(goals) {
+    cachedGoalsList = goals || [];
+    const container = $('#settings-goals-container');
+    if (!container) return;
+
+    if (cachedGoalsList.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-tertiary);font-size:12px;">No savings goals set. Tap "Add Goal" to start tracking toward a financial target.</span>';
+      return;
+    }
+
+    const today = new Date();
+    let cardsHtml = '';
+
+    cachedGoalsList.forEach((g) => {
+      const target = parseFloat(g.target_amount) || 0;
+      const saved = parseFloat(g.saved_amount) || 0;
+      const pct = target > 0 ? Math.min(100, Math.round((saved / target) * 100)) : 0;
+      const remaining = Math.max(0, target - saved);
+
+      let reqText = `Remaining: ${formatCurrency(remaining)}`;
+      if (g.target_date && remaining > 0) {
+        const tDate = new Date(g.target_date);
+        const monthsLeft = Math.max(1, (tDate.getFullYear() - today.getFullYear()) * 12 + (tDate.getMonth() - today.getMonth()));
+        const reqMonthly = Math.ceil(remaining / monthsLeft);
+        reqText = `Required: ${formatCurrency(reqMonthly)} / mo (${monthsLeft} mo left)`;
+      } else if (remaining === 0) {
+        reqText = 'Goal completed!';
+      }
+
+      cardsHtml += `
+        <div class="goal-card-item" data-id="${g.id}">
+          <div class="goal-card-top">
+            <div>
+              <div class="goal-card-title">${escapeHtml(g.name)}</div>
+              ${g.target_date ? `<span class="goal-card-target-date">Target Date: ${formatDate(g.target_date)}</span>` : ''}
+            </div>
+            <div style="text-align:right;">
+              <strong>${formatCurrency(saved)}</strong> <span style="color:var(--text-tertiary);">/ ${formatCurrency(target)}</span>
+            </div>
+          </div>
+          <div class="goal-card-progress-bar">
+            <div class="goal-card-progress-fill" style="width:${pct}%;"></div>
+          </div>
+          <div class="goal-card-stats">
+            <span>${pct}% saved</span>
+            <span class="goal-card-monthly-req">${reqText}</span>
+          </div>
+          <div class="goal-card-actions">
+            <button class="btn-primary btn-sm btn-contrib-goal-trigger" data-id="${g.id}">Add Contribution</button>
+            <button class="btn-secondary btn-sm btn-edit-goal-trigger" data-id="${g.id}">Edit</button>
+            <button class="btn-secondary btn-sm danger-text btn-del-goal-trigger" data-id="${g.id}">Delete</button>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;">
-          <span style="font-weight:600;">${formatCurrency(b.amount)}</span>
-          <button class="btn-secondary btn-sm danger-text btn-settings-deact-bill" data-id="${b.id}" style="font-size:11px;padding:3px 8px;">Deactivate</button>
+      `;
+    });
+
+    container.innerHTML = cardsHtml;
+
+    // Contribute buttons
+    container.querySelectorAll('.btn-contrib-goal-trigger').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const gid = parseInt(btn.dataset.id, 10);
+        const goal = cachedGoalsList.find((x) => x.id === gid);
+        if (goal) openGoalContributeModal(goal);
+      });
+    });
+
+    // Edit goal buttons
+    container.querySelectorAll('.btn-edit-goal-trigger').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const gid = parseInt(btn.dataset.id, 10);
+        const goal = cachedGoalsList.find((x) => x.id === gid);
+        if (goal) openGoalModal(goal);
+      });
+    });
+
+    // Delete goal buttons
+    container.querySelectorAll('.btn-del-goal-trigger').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const gid = parseInt(btn.dataset.id, 10);
+        const goal = cachedGoalsList.find((x) => x.id === gid);
+        openSimpleConfirmModal(
+          'Delete Savings Goal',
+          `Are you sure you want to delete goal "${goal?.name || 'this goal'}"?`,
+          async () => {
+            await api(`/api/goals/${gid}`, { method: 'DELETE' });
+            showToast('Goal deleted', 'success');
+            loadSettings();
+            loadGlanceData();
+          }
+        );
+      });
+    });
+  }
+
+  // Add / Edit Goal Modal
+  const btnAddGoalTrigger = $('#btn-add-goal-trigger');
+  const goalModalClose = $('#goal-modal-close');
+  const goalCancelBtn = $('#goal-cancel-btn');
+  const goalSaveBtn = $('#goal-save-btn');
+
+  if (goalModalClose) goalModalClose.addEventListener('click', () => closeModal('#modal-goal-entry'));
+  if (goalCancelBtn) goalCancelBtn.addEventListener('click', () => closeModal('#modal-goal-entry'));
+
+  function openGoalModal(goal = null) {
+    const titleEl = $('#goal-modal-title');
+    const idInput = $('#goal-edit-id');
+    const nameInput = $('#goal-name-input');
+    const targetInput = $('#goal-target-input');
+    const dateInput = $('#goal-date-input');
+    const errEl = $('#goal-modal-error');
+
+    if (errEl) errEl.style.display = 'none';
+
+    if (goal) {
+      if (titleEl) titleEl.textContent = 'Edit Savings Goal';
+      if (idInput) idInput.value = goal.id;
+      if (nameInput) nameInput.value = goal.name || '';
+      if (targetInput) targetInput.value = goal.target_amount || '';
+      if (dateInput) dateInput.value = goal.target_date ? goal.target_date.slice(0, 10) : '';
+    } else {
+      if (titleEl) titleEl.textContent = 'Add Savings Goal';
+      if (idInput) idInput.value = '';
+      if (nameInput) nameInput.value = '';
+      if (targetInput) targetInput.value = '';
+      if (dateInput) dateInput.value = '';
+    }
+
+    const initVal = JSON.stringify({ n: nameInput?.value, t: targetInput?.value, d: dateInput?.value });
+    openModal('#modal-goal-entry', () => {
+      const cur = JSON.stringify({ n: nameInput?.value, t: targetInput?.value, d: dateInput?.value });
+      return cur !== initVal;
+    });
+  }
+
+  if (btnAddGoalTrigger) {
+    btnAddGoalTrigger.addEventListener('click', () => openGoalModal(null));
+  }
+
+  if (goalSaveBtn) {
+    goalSaveBtn.addEventListener('click', async () => {
+      const gid = $('#goal-edit-id')?.value;
+      const name = $('#goal-name-input')?.value?.trim();
+      const targetVal = parseFloat($('#goal-target-input')?.value);
+      const targetDate = $('#goal-date-input')?.value || null;
+      const errEl = $('#goal-modal-error');
+
+      if (!name) {
+        if (errEl) { errEl.textContent = 'Please enter a goal name.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (isNaN(targetVal) || targetVal <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid target amount greater than zero.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      goalSaveBtn.disabled = true;
+      goalSaveBtn.textContent = 'Saving...';
+
+      try {
+        if (gid) {
+          await api(`/api/goals/${gid}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              name,
+              target_amount: targetVal,
+              target_date: targetDate,
+            }),
+          });
+          showToast(`Goal "${name}" updated`, 'success');
+        } else {
+          await api('/api/goals', {
+            method: 'POST',
+            body: JSON.stringify({
+              name,
+              target_amount: targetVal,
+              target_date: targetDate,
+            }),
+          });
+          showToast(`Goal "${name}" created!`, 'success');
+        }
+
+        closeModal('#modal-goal-entry', true);
+        loadSettings();
+        loadGlanceData();
+      } catch (err) {
+        if (errEl) { errEl.textContent = err.message || 'Failed to save goal'; errEl.style.display = 'block'; }
+      } finally {
+        goalSaveBtn.disabled = false;
+        goalSaveBtn.textContent = 'Save Goal';
+      }
+    });
+  }
+
+  // Goal Contribute Modal
+  const contribModalClose = $('#contrib-modal-close');
+  const contribCancelBtn = $('#contrib-cancel-btn');
+  const contribSaveBtn = $('#contrib-save-btn');
+
+  if (contribModalClose) contribModalClose.addEventListener('click', () => closeModal('#modal-goal-contribute'));
+  if (contribCancelBtn) contribCancelBtn.addEventListener('click', () => closeModal('#modal-goal-contribute'));
+
+  let activeContribGoal = null;
+
+  function openGoalContributeModal(goal) {
+    activeContribGoal = goal;
+    const titleEl = $('#contrib-goal-title');
+    const descEl = $('#contrib-goal-desc');
+    const amtInput = $('#contrib-amount-input');
+    const noteInput = $('#contrib-note-input');
+    const errEl = $('#contrib-modal-error');
+
+    if (errEl) errEl.style.display = 'none';
+    if (titleEl) titleEl.textContent = `Contribute to ${goal.name}`;
+    if (descEl) descEl.textContent = `Currently saved: ${formatCurrency(goal.saved_amount)} of ${formatCurrency(goal.target_amount)}`;
+    if (amtInput) amtInput.value = '';
+    if (noteInput) noteInput.value = '';
+
+    openModal('#modal-goal-contribute');
+  }
+
+  if (contribSaveBtn) {
+    contribSaveBtn.addEventListener('click', async () => {
+      if (!activeContribGoal) return;
+      const amount = parseFloat($('#contrib-amount-input')?.value);
+      const note = $('#contrib-note-input')?.value?.trim() || null;
+      const errEl = $('#contrib-modal-error');
+
+      if (isNaN(amount) || amount <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a contribution amount.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      contribSaveBtn.disabled = true;
+      contribSaveBtn.textContent = 'Adding...';
+
+      try {
+        await api('/api/goals/contribute', {
+          method: 'POST',
+          body: JSON.stringify({
+            goal_name: activeContribGoal.name,
+            amount,
+            note,
+          }),
+        });
+
+        showToast(`Added ${formatCurrency(amount)} to ${activeContribGoal.name}!`, 'success');
+        closeModal('#modal-goal-contribute', true);
+        loadSettings();
+        loadGlanceData();
+      } catch (err) {
+        if (errEl) { errEl.textContent = err.message || 'Contribution failed'; errEl.style.display = 'block'; }
+      } finally {
+        contribSaveBtn.disabled = false;
+        contribSaveBtn.textContent = 'Add Contribution';
+      }
+    });
+  }
+
+  // ---------- Recurring Expenses Upgrades in Settings ----------
+  let cachedRecurringList = [];
+
+  function renderSettingsRecurring(bills) {
+    cachedRecurringList = bills || [];
+    const listEl = $('#settings-recurring-list');
+    if (!listEl) return;
+
+    if (cachedRecurringList.length === 0) {
+      listEl.innerHTML = '<span style="color:var(--text-tertiary);font-size:12px;">No recurring bills scheduled. Tap "Add Bill" above to track rent, wifi, or subscriptions.</span>';
+      return;
+    }
+
+    listEl.innerHTML = cachedRecurringList.map((b) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border-subtle);font-size:13px;flex-wrap:wrap;gap:8px;">
+        <div>
+          <strong style="color:var(--text-primary);">${escapeHtml(b.name)}</strong>
+          <span style="color:var(--text-secondary);margin-left:6px;">(${escapeHtml(b.category || 'other')} · ${escapeHtml(b.frequency)})</span>
+          <span style="margin-left:8px;font-size:10px;padding:2px 7px;border-radius:var(--radius-pill);${b.active ? 'background:rgba(16,185,129,0.15);color:#34D399;' : 'background:var(--bg-elevated);color:var(--text-tertiary);'}">
+            ${b.active ? 'Active' : 'Paused'}
+          </span>
+          <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px;">Next due: ${formatDate(b.next_due_date)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;color:var(--text-primary);margin-right:4px;">${formatCurrency(b.amount)}</span>
+          <button class="btn-secondary btn-sm btn-toggle-rec" data-id="${b.id}" style="font-size:11px;padding:4px 8px;">
+            ${b.active ? 'Pause' : 'Activate'}
+          </button>
+          <button class="btn-secondary btn-sm btn-edit-rec" data-id="${b.id}" style="font-size:11px;padding:4px 8px;">
+            Edit
+          </button>
+          <button class="btn-secondary btn-sm danger-text btn-del-rec" data-id="${b.id}" style="font-size:11px;padding:4px 8px;">
+            Delete
+          </button>
         </div>
       </div>
     `).join('');
 
-    listEl.querySelectorAll('.btn-settings-deact-bill').forEach((btn) => {
+    // Toggle active / paused
+    listEl.querySelectorAll('.btn-toggle-rec').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
         try {
-          await api(`/api/recurring/${id}/deactivate`, { method: 'POST' });
-          showToast('Bill deactivated', 'success');
+          const res = await api(`/api/recurring/${id}/toggle`, { method: 'POST' });
+          showToast(`Recurring bill ${res.active ? 'activated' : 'paused'}`, 'success');
           loadSettings();
+          loadDashboard();
         } catch (err) {
-          showToast(err.message || 'Failed to deactivate bill', 'error');
+          showToast(err.message || 'Failed to toggle bill status', 'error');
         }
       });
+    });
+
+    // Edit recurring bill
+    listEl.querySelectorAll('.btn-edit-rec').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const bill = cachedRecurringList.find((b) => b.id === id);
+        if (bill) openRecurringEditModal(bill);
+      });
+    });
+
+    // Delete recurring bill
+    listEl.querySelectorAll('.btn-del-rec').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const bill = cachedRecurringList.find((b) => b.id === id);
+        openSimpleConfirmModal(
+          'Delete Recurring Bill',
+          `Are you sure you want to delete "${bill?.name || 'this bill'}"?`,
+          async () => {
+            await api(`/api/recurring/${id}`, { method: 'DELETE' });
+            showToast('Recurring bill deleted', 'success');
+            loadSettings();
+            loadDashboard();
+          }
+        );
+      });
+    });
+  }
+
+  // Edit recurring bill modal
+  const recEditClose = $('#rec-edit-close');
+  const recEditCancel = $('#rec-edit-cancel-btn');
+  const recEditSave = $('#rec-edit-save-btn');
+
+  if (recEditClose) recEditClose.addEventListener('click', () => closeModal('#modal-recurring-edit'));
+  if (recEditCancel) recEditCancel.addEventListener('click', () => closeModal('#modal-recurring-edit'));
+
+  function openRecurringEditModal(bill) {
+    populateCategoryDropdowns();
+    const idInput = $('#rec-edit-id');
+    const nameInput = $('#rec-edit-name');
+    const amtInput = $('#rec-edit-amount');
+    const catSelect = $('#rec-edit-category');
+    const freqSelect = $('#rec-edit-frequency');
+    const dateInput = $('#rec-edit-due-date');
+    const errEl = $('#rec-edit-error');
+
+    if (errEl) errEl.style.display = 'none';
+    if (idInput) idInput.value = bill.id;
+    if (nameInput) nameInput.value = bill.name || '';
+    if (amtInput) amtInput.value = bill.amount || '';
+    if (catSelect) catSelect.value = (bill.category || 'bills').toLowerCase();
+    if (freqSelect) freqSelect.value = bill.frequency || 'monthly';
+    if (dateInput) dateInput.value = bill.next_due_date ? bill.next_due_date.slice(0, 10) : '';
+
+    const initVal = JSON.stringify({
+      n: nameInput?.value, a: amtInput?.value, c: catSelect?.value, f: freqSelect?.value, d: dateInput?.value
+    });
+
+    openModal('#modal-recurring-edit', () => {
+      const cur = JSON.stringify({
+        n: nameInput?.value, a: amtInput?.value, c: catSelect?.value, f: freqSelect?.value, d: dateInput?.value
+      });
+      return cur !== initVal;
+    });
+  }
+
+  if (recEditSave) {
+    recEditSave.addEventListener('click', async () => {
+      const id = $('#rec-edit-id')?.value;
+      const name = $('#rec-edit-name')?.value?.trim();
+      const amount = parseFloat($('#rec-edit-amount')?.value);
+      const category = $('#rec-edit-category')?.value;
+      const frequency = $('#rec-edit-frequency')?.value;
+      const dueDate = $('#rec-edit-due-date')?.value;
+      const errEl = $('#rec-edit-error');
+
+      if (!name) {
+        if (errEl) { errEl.textContent = 'Please enter a name.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (isNaN(amount) || amount <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid amount.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (!dueDate) {
+        if (errEl) { errEl.textContent = 'Please pick a next due date.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      recEditSave.disabled = true;
+      recEditSave.textContent = 'Saving...';
+
+      try {
+        await api(`/api/recurring/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            name,
+            amount,
+            category,
+            frequency,
+            start_date: dueDate,
+          }),
+        });
+
+        showToast(`Bill "${name}" updated successfully`, 'success');
+        closeModal('#modal-recurring-edit', true);
+        loadSettings();
+        loadDashboard();
+      } catch (err) {
+        if (errEl) { errEl.textContent = err.message || 'Failed to update bill'; errEl.style.display = 'block'; }
+      } finally {
+        recEditSave.disabled = false;
+        recEditSave.textContent = 'Save Changes';
+      }
+    });
+  }
+
+  // ---------- Udhar Manual Management ----------
+  const btnAddUdharTrigger = $('#btn-add-udhar-trigger');
+  const udharModalClose = $('#udhar-modal-close');
+  const udharCancelBtn = $('#udhar-cancel-btn');
+  const udharSaveBtn = $('#udhar-save-btn');
+  const udharKindSelect = $('#udhar-kind-select');
+  const udharDueDateWrap = $('#udhar-due-date-wrap');
+  const udharPersonInput = $('#udhar-person-input');
+  const udharAmountInput = $('#udhar-amount-input');
+  const udharBalanceWarn = $('#udhar-balance-warning');
+
+  if (udharModalClose) udharModalClose.addEventListener('click', () => closeModal('#modal-udhar-entry'));
+  if (udharCancelBtn) udharCancelBtn.addEventListener('click', () => closeModal('#modal-udhar-entry'));
+
+  function updateUdharModalKindUi() {
+    const kind = udharKindSelect?.value || 'lent';
+    if (udharDueDateWrap) {
+      udharDueDateWrap.style.display = (kind === 'lent' || kind === 'borrowed') ? 'flex' : 'none';
+    }
+    checkUdharBalanceWarning();
+  }
+
+  function checkUdharBalanceWarning() {
+    if (!udharBalanceWarn) return;
+    const kind = udharKindSelect?.value;
+    const pName = udharPersonInput?.value?.trim().toLowerCase();
+    const amt = parseFloat(udharAmountInput?.value);
+
+    if (!pName || isNaN(amt) || amt <= 0 || (kind !== 'received_back' && kind !== 'paid_back')) {
+      udharBalanceWarn.style.display = 'none';
+      return;
+    }
+
+    if (!cachedUdharData) {
+      udharBalanceWarn.style.display = 'none';
+      return;
+    }
+
+    const persons = cachedUdharData.persons || cachedUdharData.people || [];
+    const p = persons.find((x) => (x.person_key || (x.name || x.person_name || '').toLowerCase()) === pName || (x.name || '').toLowerCase() === pName);
+
+    if (!p) {
+      udharBalanceWarn.style.display = 'none';
+      return;
+    }
+
+    const net = p.net || 0;
+    if (kind === 'received_back' && amt > net) {
+      udharBalanceWarn.textContent = `Warning: Received back amount (${formatCurrency(amt)}) exceeds friend's outstanding debt of ${formatCurrency(net)}.`;
+      udharBalanceWarn.style.display = 'block';
+    } else if (kind === 'paid_back' && amt > Math.abs(net)) {
+      udharBalanceWarn.textContent = `Warning: Paid back amount (${formatCurrency(amt)}) exceeds your recorded debt of ${formatCurrency(Math.abs(net))}.`;
+      udharBalanceWarn.style.display = 'block';
+    } else {
+      udharBalanceWarn.style.display = 'none';
+    }
+  }
+
+  if (udharKindSelect) udharKindSelect.addEventListener('change', updateUdharModalKindUi);
+  if (udharPersonInput) udharPersonInput.addEventListener('input', checkUdharBalanceWarning);
+  if (udharAmountInput) udharAmountInput.addEventListener('input', checkUdharBalanceWarning);
+
+  function openUdharModal(entry = null, defaultPersonName = null) {
+    const titleEl = $('#udhar-modal-title');
+    const idInput = $('#udhar-edit-id');
+    const errEl = $('#udhar-modal-error');
+    const noteInput = $('#udhar-note-input');
+    const dateInput = $('#udhar-date-input');
+    const dueDateInput = $('#udhar-due-date-input');
+
+    if (errEl) errEl.style.display = 'none';
+    if (udharBalanceWarn) udharBalanceWarn.style.display = 'none';
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    if (entry) {
+      if (titleEl) titleEl.textContent = 'Edit Udhar Entry';
+      if (idInput) idInput.value = entry.id;
+      if (udharPersonInput) udharPersonInput.value = entry.person_name || defaultPersonName || '';
+      if (udharKindSelect) udharKindSelect.value = entry.kind || 'lent';
+      if (udharAmountInput) udharAmountInput.value = entry.amount || '';
+      if (noteInput) noteInput.value = entry.note || '';
+      if (dateInput) dateInput.value = entry.entry_date ? entry.entry_date.slice(0, 10) : todayStr;
+      if (dueDateInput) dueDateInput.value = entry.due_date ? entry.due_date.slice(0, 10) : '';
+    } else {
+      if (titleEl) titleEl.textContent = 'Add Udhar Entry';
+      if (idInput) idInput.value = '';
+      if (udharPersonInput) udharPersonInput.value = defaultPersonName || '';
+      if (udharKindSelect) udharKindSelect.value = 'lent';
+      if (udharAmountInput) udharAmountInput.value = '';
+      if (noteInput) noteInput.value = '';
+      if (dateInput) dateInput.value = todayStr;
+      if (dueDateInput) dueDateInput.value = '';
+    }
+
+    updateUdharModalKindUi();
+
+    const initVal = JSON.stringify({
+      p: udharPersonInput?.value,
+      k: udharKindSelect?.value,
+      a: udharAmountInput?.value,
+      n: noteInput?.value,
+      d: dateInput?.value,
+      dd: dueDateInput?.value,
+    });
+
+    openModal('#modal-udhar-entry', () => {
+      const cur = JSON.stringify({
+        p: udharPersonInput?.value,
+        k: udharKindSelect?.value,
+        a: udharAmountInput?.value,
+        n: noteInput?.value,
+        d: dateInput?.value,
+        dd: dueDateInput?.value,
+      });
+      return cur !== initVal;
+    });
+  }
+
+  if (btnAddUdharTrigger) {
+    btnAddUdharTrigger.addEventListener('click', () => openUdharModal(null));
+  }
+
+  if (udharSaveBtn) {
+    udharSaveBtn.addEventListener('click', async () => {
+      const editId = $('#udhar-edit-id')?.value;
+      const personName = udharPersonInput?.value?.trim();
+      const kind = udharKindSelect?.value;
+      const amount = parseFloat(udharAmountInput?.value);
+      const note = $('#udhar-note-input')?.value?.trim() || '';
+      const entryDate = $('#udhar-date-input')?.value;
+      const dueDate = (kind === 'lent' || kind === 'borrowed') ? ($('#udhar-due-date-input')?.value || null) : null;
+      const errEl = $('#udhar-modal-error');
+
+      if (!personName) {
+        if (errEl) { errEl.textContent = 'Please enter a friend or person name.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (isNaN(amount) || amount <= 0) {
+        if (errEl) { errEl.textContent = 'Please enter a valid amount greater than zero.'; errEl.style.display = 'block'; }
+        return;
+      }
+      if (!entryDate) {
+        if (errEl) { errEl.textContent = 'Please pick a date.'; errEl.style.display = 'block'; }
+        return;
+      }
+
+      udharSaveBtn.disabled = true;
+      udharSaveBtn.textContent = 'Saving...';
+
+      try {
+        if (editId) {
+          await api(`/api/udhar/${editId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              person_name: personName,
+              kind,
+              amount,
+              note,
+              entry_date: entryDate,
+              due_date: dueDate,
+            }),
+          });
+          showToast('Udhar entry updated', 'success');
+        } else {
+          await api('/api/udhar', {
+            method: 'POST',
+            body: JSON.stringify({
+              person_name: personName,
+              kind,
+              amount,
+              note,
+              entry_date: entryDate,
+              due_date: dueDate,
+            }),
+          });
+          showToast(`Udhar entry recorded for ${personName}`, 'success');
+        }
+
+        closeModal('#modal-udhar-entry', true);
+        closeModal('#modal-udhar-ledger', true);
+        loadUdhar();
+      } catch (err) {
+        if (errEl) { errEl.textContent = err.message || 'Failed to save udhar entry'; errEl.style.display = 'block'; }
+      } finally {
+        udharSaveBtn.disabled = false;
+        udharSaveBtn.textContent = 'Save Udhar';
+      }
+    });
+  }
+
+  // Udhar Ledger Modal
+  let activeLedgerPerson = null;
+
+  function openUdharLedgerModal(person) {
+    activeLedgerPerson = person;
+    const modal = $('#modal-udhar-ledger');
+    const titleEl = $('#udhar-ledger-title');
+    const subtitleEl = $('#udhar-ledger-subtitle');
+    const tableWrap = $('#udhar-ledger-table-wrap');
+
+    if (!modal || !tableWrap) return;
+
+    const pName = person.name || person.person_name || 'Friend';
+    const net = person.net || 0;
+    const netText = net > 0 ? `Owes you ${formatCurrency(net)}` : (net < 0 ? `You owe ${formatCurrency(Math.abs(net))}` : 'Settled up');
+
+    if (titleEl) titleEl.textContent = `Ledger: ${pName}`;
+    if (subtitleEl) subtitleEl.textContent = `Net Balance: ${netText}`;
+
+    const history = person.history || [];
+    if (history.length === 0) {
+      tableWrap.innerHTML = '<div class="empty-state" style="padding:24px;"><p>No transaction history recorded with this person.</p></div>';
+    } else {
+      let rowsHtml = '';
+      history.forEach((h) => {
+        const isLent = h.kind === 'lent';
+        const isPastDue = h.due_date && !h.resolved && new Date(h.due_date) < new Date();
+        const kindLabel = isLent ? 'Lent' : 'Borrowed';
+        const kindColor = isLent ? 'lent-color' : 'borrowed-color';
+
+        rowsHtml += `
+          <tr class="${isPastDue ? 'udhar-overdue-row' : ''}">
+            <td style="white-space:nowrap;">${formatDate(h.entry_date)}</td>
+            <td><strong class="${kindColor}">${kindLabel}</strong></td>
+            <td style="font-weight:600;">${formatCurrency(h.amount)}</td>
+            <td style="color:var(--text-secondary);max-width:140px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(h.note || '--')}</td>
+            <td>
+              ${h.due_date ? `
+                <div style="font-size:11px;${isPastDue ? 'color:var(--danger);font-weight:600;' : 'color:var(--text-tertiary);'}">
+                  Due: ${formatDate(h.due_date)}
+                  ${h.resolved ? '<span class="udhar-resolved-badge">Resolved</span>' : ''}
+                </div>
+              ` : '<span style="color:var(--text-tertiary);">--</span>'}
+            </td>
+            <td style="text-align:right;white-space:nowrap;">
+              <div class="txn-row-actions">
+                ${h.due_date && !h.resolved ? `
+                  <button class="btn-secondary btn-sm btn-resolve-udhar" data-id="${h.id}" style="font-size:10px;padding:2px 6px;">Resolve</button>
+                ` : ''}
+                <button class="btn-icon-action btn-edit-udhar-entry" data-id="${h.id}" title="Edit entry">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="btn-icon-action danger btn-del-udhar-entry" data-id="${h.id}" title="Delete entry">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      tableWrap.innerHTML = `
+        <table class="udhar-ledger-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Kind</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Due Date</th>
+              <th style="text-align:right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      `;
+
+      // Resolve due date buttons
+      tableWrap.querySelectorAll('.btn-resolve-udhar').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const eid = btn.dataset.id;
+          try {
+            await api(`/api/udhar/${eid}/resolve`, { method: 'POST' });
+            showToast('Due date marked as resolved', 'success');
+            loadUdhar();
+            closeModal('#modal-udhar-ledger', true);
+          } catch (err) {
+            showToast(err.message || 'Failed to resolve due date', 'error');
+          }
+        });
+      });
+
+      // Edit entry button
+      tableWrap.querySelectorAll('.btn-edit-udhar-entry').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const eid = parseInt(btn.dataset.id, 10);
+          const entry = history.find((h) => h.id === eid);
+          if (entry) {
+            closeModal('#modal-udhar-ledger', true);
+            openUdharModal(entry, pName);
+          }
+        });
+      });
+
+      // Delete entry with balance recalculation shown
+      tableWrap.querySelectorAll('.btn-del-udhar-entry').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const eid = parseInt(btn.dataset.id, 10);
+          const entry = history.find((h) => h.id === eid);
+          if (!entry) return;
+
+          // Recalculate balance
+          const delta = (entry.kind === 'lent' ? -1 : 1) * parseFloat(entry.amount);
+          const curNet = person.net || 0;
+          const newNet = curNet + delta;
+
+          const desc = `Deleting this entry of ${formatCurrency(entry.amount)} (${entry.kind}) will update ${pName}'s net balance from ${formatCurrency(curNet)} to ${formatCurrency(newNet)}. Proceed?`;
+
+          openSimpleConfirmModal('Delete Udhar Entry', desc, async () => {
+            await api(`/api/udhar/${eid}`, { method: 'DELETE' });
+            showToast('Udhar entry deleted', 'success');
+            closeModal('#modal-udhar-ledger', true);
+            loadUdhar();
+          });
+        });
+      });
+    }
+
+    openModal('#modal-udhar-ledger');
+  }
+
+  const udharLedgerClose = $('#udhar-ledger-close');
+  const udharLedgerDone = $('#udhar-ledger-done-btn');
+  const udharLedgerAddEntry = $('#udhar-ledger-add-entry-btn');
+
+  if (udharLedgerClose) udharLedgerClose.addEventListener('click', () => closeModal('#modal-udhar-ledger', true));
+  if (udharLedgerDone) udharLedgerDone.addEventListener('click', () => closeModal('#modal-udhar-ledger', true));
+  if (udharLedgerAddEntry) {
+    udharLedgerAddEntry.addEventListener('click', () => {
+      const pName = activeLedgerPerson?.name || activeLedgerPerson?.person_name || null;
+      closeModal('#modal-udhar-ledger', true);
+      openUdharModal(null, pName);
+    });
+  }
+
+  // Simple Destructive Confirmation Modal
+  let activeSimpleConfirmCallback = null;
+
+  function openSimpleConfirmModal(title, desc, onConfirm) {
+    const modal = $('#modal-simple-confirm');
+    const titleEl = $('#simple-confirm-title');
+    const descEl = $('#simple-confirm-desc');
+    const actionBtn = $('#simple-confirm-action');
+
+    if (!modal) return;
+    if (titleEl) titleEl.textContent = title || 'Confirm Action';
+    if (descEl) descEl.textContent = desc || 'Are you sure you want to proceed?';
+
+    activeSimpleConfirmCallback = onConfirm;
+    openModal('#modal-simple-confirm');
+  }
+
+  const simpleConfirmClose = $('#simple-confirm-close');
+  const simpleConfirmCancel = $('#simple-confirm-cancel');
+  const simpleConfirmAction = $('#simple-confirm-action');
+
+  if (simpleConfirmClose) simpleConfirmClose.addEventListener('click', () => closeModal('#modal-simple-confirm', true));
+  if (simpleConfirmCancel) simpleConfirmCancel.addEventListener('click', () => closeModal('#modal-simple-confirm', true));
+  if (simpleConfirmAction) {
+    simpleConfirmAction.addEventListener('click', async () => {
+      if (activeSimpleConfirmCallback) {
+        simpleConfirmAction.disabled = true;
+        simpleConfirmAction.textContent = 'Processing...';
+        try {
+          await activeSimpleConfirmCallback();
+          closeModal('#modal-simple-confirm', true);
+        } catch (err) {
+          showToast(err.message || 'Operation failed', 'error');
+        } finally {
+          simpleConfirmAction.disabled = false;
+          simpleConfirmAction.textContent = 'Confirm';
+          activeSimpleConfirmCallback = null;
+        }
+      }
     });
   }
 

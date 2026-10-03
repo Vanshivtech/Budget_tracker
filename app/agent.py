@@ -7,6 +7,8 @@ Multi-user scoped: user_id is injected from the authenticated session via
 RunnableConfig and contextvar -- never exposed to the LLM or client.
 """
 import contextvars
+from typing import Any
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
@@ -367,24 +369,30 @@ def get_goals(config: RunnableConfig = None) -> str:
 def update_profile(
     current_savings: float | None = None,
     risk_comfort: str | None = None,
+    living_situation: str | None = None,
     config: RunnableConfig = None,
 ) -> str:
     """Update the user's financial profile. current_savings is total savings in Rs.
-    risk_comfort is 'low', 'medium', or 'high'. Provide only fields to update."""
+    risk_comfort is 'low', 'medium', or 'high'. living_situation is 'family', 'alone', 'pg', or 'roommates'. Provide only fields to update."""
     user_id = _get_user_id(config)
     if risk_comfort and risk_comfort not in ("low", "medium", "high"):
         return "risk_comfort must be 'low', 'medium', or 'high'."
+    if living_situation and living_situation not in ("family", "alone", "pg", "roommates"):
+        return "living_situation must be 'family', 'alone', 'pg', or 'roommates'."
     profile = db.update_user_profile(
         user_id=user_id,
         current_savings=current_savings,
         risk_comfort=risk_comfort,
+        living_situation=living_situation,
     )
     parts = []
     if profile.get("current_savings") is not None:
         parts.append(f"current savings: Rs {profile['current_savings']:.0f}")
     if profile.get("risk_comfort"):
         parts.append(f"risk comfort: {profile['risk_comfort']}")
-    return f"Profile updated -- {', '.join(parts)}." if parts else "Profile updated."
+    if profile.get("living_situation"):
+        parts.append(f"living situation: {profile['living_situation']}")
+    return f"Profile updated: {', '.join(parts) if parts else 'no changes'}."
 
 
 @tool
@@ -602,23 +610,31 @@ TOOLS = [
 ]
 
 _checkpointer = MemorySaver()
+_agents_cache: dict[int, Any] = {}
 
-# The agent is created once. The LLM model used is selected per-call via the pool.
-# We initialize with the first available model.
+
+def _get_agent(model: BaseChatModel):
+    """Retrieve or construct a LangGraph React agent for the given model instance."""
+    mid = id(model)
+    if mid not in _agents_cache:
+        _agents_cache[mid] = create_react_agent(
+            model=model,
+            tools=TOOLS,
+            state_modifier=SYSTEM_PROMPT,
+            checkpointer=_checkpointer,
+        )
+    return _agents_cache[mid]
+
+
+# The fallback/initial LLM is created once for module-level compatibility.
 _initial_pair = llm_pool.get_available_model()
 if _initial_pair:
     _initial_llm = _initial_pair[0]
 else:
-    # Deferred -- will fail gracefully at call time
     from langchain_groq import ChatGroq as _FallbackChatGroq
     _initial_llm = _FallbackChatGroq(model=settings.GROQ_MODEL, api_key="placeholder")
 
-agent = create_react_agent(
-    model=_initial_llm,
-    tools=TOOLS,
-    state_modifier=SYSTEM_PROMPT,
-    checkpointer=_checkpointer,
-)
+agent = _get_agent(_initial_llm)
 
 
 def handle_user_message(user_id: int, session_id: str, text: str) -> str:
@@ -634,9 +650,8 @@ def handle_user_message(user_id: int, session_id: str, text: str) -> str:
         }
 
         def _invoke(model, messages, cfg):
-            # Swap the model on the agent if it differs
-            agent.nodes["agent"].runnable.first = model
-            return agent.invoke({"messages": messages}, config=cfg)
+            active_agent = _get_agent(model)
+            return active_agent.invoke({"messages": messages}, config=cfg)
 
         result = llm_pool.invoke_with_retry(
             _invoke,

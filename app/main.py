@@ -33,12 +33,12 @@ from app.db import (
     compute_health_score, split_expense, generate_monthly_excel, generate_monthly_pdf,
     current_month,
     # New functions
-    set_username, set_avatar, get_user_display,
+    set_username, set_avatar, get_user_display, set_user_avatar_url, get_dashboard_tier2,
     add_user_category, remove_user_category, get_all_categories, get_user_categories,
     add_transaction_tag, remove_transaction_tag, get_all_user_tags,
     add_merchant_alias, search_transactions, get_dashboard_ranged,
     clear_transactions, clear_udhar, clear_everything, delete_account,
-    export_all_data_json, get_undo_status, execute_undo,
+    export_all_data_json, get_undo_status, execute_undo, store_undo_state, get_transaction_by_id,
     # Tier 3 additions
     add_receipt, get_receipts, get_receipt_by_id, delete_receipt, get_transaction_receipts,
     get_cached_merchant_category, set_cached_merchant_category, get_past_merchant_category,
@@ -228,6 +228,7 @@ class IncomeRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     current_savings: float | None = None
     risk_comfort: str | None = None
+    living_situation: str | None = None
 
 
 class OnboardingCategoryItem(BaseModel):
@@ -734,13 +735,16 @@ def profile_get(user: dict = Depends(get_current_user)):
 
 @app.patch("/api/profile")
 def profile_update(req: ProfileUpdateRequest, user: dict = Depends(get_current_user)):
-    """Update current_savings and/or risk_comfort."""
+    """Update current_savings, risk_comfort, and/or living_situation."""
     if req.risk_comfort and req.risk_comfort not in ("low", "medium", "high"):
         raise HTTPException(status_code=400, detail="risk_comfort must be low/medium/high")
+    if req.living_situation and req.living_situation not in ("family", "alone", "pg", "roommates"):
+        raise HTTPException(status_code=400, detail="living_situation must be family/alone/pg/roommates")
     return update_user_profile(
         user_id=user["id"],
         current_savings=req.current_savings,
         risk_comfort=req.risk_comfort,
+        living_situation=req.living_situation,
     )
 
 
@@ -844,6 +848,7 @@ def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_c
         tx["tags"] = [clean_tag]
     else:
         tx["tags"] = []
+    store_undo_state(user["id"], "log", "transaction", tx["id"], None)
     return tx
 
 
@@ -898,6 +903,7 @@ def transaction_update(tid: int, req: TransactionUpdateRequest, user: dict = Dep
     """Edit an existing transaction."""
     if req.amount is not None and req.amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be positive")
+    old = get_transaction_by_id(user["id"], tid)
     updated = update_expense(
         user_id=user["id"],
         transaction_id=tid,
@@ -910,15 +916,20 @@ def transaction_update(tid: int, req: TransactionUpdateRequest, user: dict = Dep
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    if old:
+        store_undo_state(user["id"], "update", "transaction", tid, old)
     return updated
 
 
 @app.delete("/api/transactions/{tid}")
 def transaction_delete(tid: int, user: dict = Depends(get_current_user)):
     """Delete a single transaction."""
+    old = get_transaction_by_id(user["id"], tid)
     ok = delete_expense(user_id=user["id"], transaction_id=tid)
     if not ok:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    if old:
+        store_undo_state(user["id"], "delete", "transaction", tid, old)
     return {"status": "ok", "deleted_id": tid}
 
 
@@ -1005,57 +1016,8 @@ def data_export_all(user: dict = Depends(get_current_user)):
     )
 
 
-# ---------- User Display & Categories ----------
-
-@app.get("/api/user/display")
-def user_display_get(user: dict = Depends(get_current_user)):
-    """Get display info: username, avatar_id, email."""
-    return get_user_display(user["id"])
-
-
-@app.post("/api/user/username")
-def user_username_set(req: UsernameRequest, user: dict = Depends(get_current_user)):
-    """Set a username (3-20 chars)."""
-    try:
-        return set_username(user["id"], req.username)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/user/avatar")
-def user_avatar_set(req: AvatarRequest, user: dict = Depends(get_current_user)):
-    """Set avatar icon id (1-8)."""
-    return set_avatar(user["id"], req.avatar_id)
-
-
-@app.get("/api/categories")
-def categories_list(user: dict = Depends(get_current_user)):
-    """Get system and custom categories."""
-    custom = get_user_categories(user["id"])
-    all_cats = get_all_categories(user["id"])
-    return {"categories": all_cats, "custom": custom}
-
-
-@app.post("/api/categories")
-def category_add(req: CategoryRequest, user: dict = Depends(get_current_user)):
-    """Add a custom category."""
-    try:
-        return add_user_category(user["id"], req.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.delete("/api/categories/{category_name}")
-def category_delete(category_name: str, user: dict = Depends(get_current_user)):
-    """Remove a custom category."""
-    removed = remove_user_category(user["id"], category_name)
-    if not removed:
-        raise HTTPException(status_code=404, detail="Category not found or cannot be removed.")
-    return {"status": "ok", "deleted": category_name}
-
-
-
 # ---------- Onboarding ----------
+
 
 @app.get("/api/onboarding/status")
 def onboarding_status(user: dict = Depends(get_current_user)):

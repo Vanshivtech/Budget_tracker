@@ -1,5 +1,5 @@
 /* ABT Service Worker — app-shell caching */
-const CACHE_NAME = 'abt-v7';
+const CACHE_NAME = 'abt-v9';
 const SHELL_ASSETS = [
   '/',
   '/static/styles.css',

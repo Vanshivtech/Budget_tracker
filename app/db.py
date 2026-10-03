@@ -34,7 +34,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, execute_values
 
 from app.config import settings
 
@@ -279,6 +279,7 @@ def init_db() -> None:
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_reset BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 
             CREATE TABLE IF NOT EXISTS errors (
                 id         SERIAL PRIMARY KEY,
@@ -787,16 +788,16 @@ def get_effective_budgets(user_id: int, month: str | None = None) -> dict[str, d
 
     if to_record:
         with get_db_cursor() as cur:
-            for item in to_record:
-                cur.execute(
-                    """
-                    INSERT INTO budget_rollovers (user_id, category, month, carried_amount)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (user_id, category, month)
-                    DO UPDATE SET carried_amount = EXCLUDED.carried_amount
-                    """,
-                    item,
-                )
+            execute_values(
+                cur,
+                """
+                INSERT INTO budget_rollovers (user_id, category, month, carried_amount)
+                VALUES %s
+                ON CONFLICT (user_id, category, month)
+                DO UPDATE SET carried_amount = EXCLUDED.carried_amount
+                """,
+                to_record,
+            )
 
     return results
 
@@ -1476,6 +1477,7 @@ def update_user_profile(
     user_id: int,
     current_savings: float | None = None,
     risk_comfort: str | None = None,
+    living_situation: str | None = None,
 ) -> dict:
     """Upsert user profile fields."""
     with get_db_cursor() as cur:
@@ -1490,6 +1492,9 @@ def update_user_profile(
             if risk_comfort is not None:
                 updates.append("risk_comfort = %s")
                 params.append(risk_comfort)
+            if living_situation is not None:
+                updates.append("living_situation = %s")
+                params.append(living_situation)
             updates.append("updated_at = NOW()")
             params.append(user_id)
             cur.execute(
@@ -1499,10 +1504,10 @@ def update_user_profile(
         else:
             cur.execute(
                 """
-                INSERT INTO user_profile (user_id, current_savings, risk_comfort)
-                VALUES (%s, %s, %s)
+                INSERT INTO user_profile (user_id, current_savings, risk_comfort, living_situation)
+                VALUES (%s, %s, %s, %s)
                 """,
-                (user_id, current_savings, risk_comfort),
+                (user_id, current_savings, risk_comfort, living_situation),
             )
     return get_user_profile(user_id)
 
@@ -2919,7 +2924,7 @@ def set_username(user_id: int, username: str) -> dict:
         raise ValueError("Username must be 3-20 characters.")
     with get_db_cursor() as cur:
         cur.execute(
-            "UPDATE users SET username = %s WHERE id = %s RETURNING id, email, username, avatar_id",
+            "UPDATE users SET username = %s WHERE id = %s RETURNING id, email, username, avatar_id, avatar_url",
             (clean, user_id),
         )
         row = cur.fetchone()
@@ -2927,21 +2932,32 @@ def set_username(user_id: int, username: str) -> dict:
 
 
 def set_avatar(user_id: int, avatar_id: int) -> dict:
-    """Set avatar_id (1-8)."""
+    """Set preset avatar_id (1-8) and clear uploaded photo."""
     aid = max(1, min(8, avatar_id))
     with get_db_cursor() as cur:
         cur.execute(
-            "UPDATE users SET avatar_id = %s WHERE id = %s RETURNING id, email, username, avatar_id",
+            "UPDATE users SET avatar_id = %s, avatar_url = NULL WHERE id = %s RETURNING id, email, username, avatar_id, avatar_url",
             (aid, user_id),
         )
         row = cur.fetchone()
         return dict(row) if row else {}
 
 
-def get_user_display(user_id: int) -> dict:
-    """Get display info: username, avatar_id, email."""
+def set_user_avatar_url(user_id: int, avatar_url: Optional[str]) -> dict:
+    """Set or clear avatar_url for photo upload."""
     with get_db_cursor() as cur:
-        cur.execute("SELECT id, email, username, avatar_id FROM users WHERE id = %s", (user_id,))
+        cur.execute(
+            "UPDATE users SET avatar_url = %s WHERE id = %s RETURNING id, email, username, avatar_id, avatar_url",
+            (avatar_url, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def get_user_display(user_id: int) -> dict:
+    """Get display info: username, avatar_id, avatar_url, email."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT id, email, username, avatar_id, avatar_url FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         if not row:
             return {}
@@ -3502,14 +3518,23 @@ def search_transactions(
             tuple(params + [per_page, offset]),
         )
         rows = cur.fetchall()
+        tx_ids = [r["id"] for r in rows]
+        tags_map = {}
+        if tx_ids:
+            cur.execute(
+                "SELECT transaction_id, tag FROM transaction_tags WHERE user_id = %s AND transaction_id = ANY(%s) ORDER BY tag",
+                (user_id, tx_ids),
+            )
+            for tr in cur.fetchall():
+                tags_map.setdefault(tr["transaction_id"], []).append(tr["tag"])
+
         results = []
         for r in rows:
             d = dict(r)
             d["amount"] = float(d["amount"])
             if hasattr(d.get("date"), "isoformat"):
                 d["date"] = d["date"].isoformat()
-            # Fetch tags
-            d["tags"] = get_transaction_tags(user_id, d["id"])
+            d["tags"] = tags_map.get(d["id"], [])
             results.append(d)
 
     return {
@@ -3532,6 +3557,7 @@ def get_dashboard_ranged(
 ) -> dict:
     """Dashboard data with optional date range filtering.
     If no dates given, defaults to current month."""
+    t_overall_start = time.perf_counter()
     is_custom = bool(start_date or end_date)
     if not start_date and not end_date:
         month = current_month()
@@ -3544,6 +3570,7 @@ def get_dashboard_ranged(
     elif not end_date:
         end_date = date.today().isoformat()
 
+    t_cat_start = time.perf_counter()
     with get_db_cursor() as cur:
         # Category spend in range
         cur.execute(
@@ -3556,8 +3583,11 @@ def get_dashboard_ranged(
             (user_id, start_date, end_date),
         )
         spend = {r["category"]: float(r["total"]) for r in cur.fetchall()}
+        t_cat_end = time.perf_counter()
+        print(f"[DASHBOARD_TIMING] Category spend query: {(t_cat_end - t_cat_start)*1000:.2f}ms", flush=True)
 
         # Daily spend in range
+        t_daily_start = time.perf_counter()
         cur.execute(
             """
             SELECT DATE(date AT TIME ZONE 'UTC') as day, SUM(amount) as total
@@ -3572,14 +3602,33 @@ def get_dashboard_ranged(
              "total": float(r["total"])}
             for r in cur.fetchall()
         ]
+        t_daily_end = time.perf_counter()
+        print(f"[DASHBOARD_TIMING] Daily spend query: {(t_daily_end - t_daily_start)*1000:.2f}ms", flush=True)
 
     # Monthly trends (always last 6 months regardless of range)
+    t_trends_start = time.perf_counter()
     monthly_trends = get_monthly_totals(user_id, num_months=6)
+    t_trends_end = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Monthly trends query: {(t_trends_end - t_trends_start)*1000:.2f}ms", flush=True)
 
     # Budgets: only meaningful for single-month ranges
+    t_budgets_start = time.perf_counter()
     month_str = start_date[:7] if start_date else current_month()
     eff_budgets = get_effective_budgets(user_id, month_str)
+    t_budgets_end = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Effective budgets query: {(t_budgets_end - t_budgets_start)*1000:.2f}ms", flush=True)
+
+    # Udhar summary
+    t_udhar_start = time.perf_counter()
     udhar = get_udhar_summary(user_id)
+    t_udhar_end = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Udhar summary query: {(t_udhar_end - t_udhar_start)*1000:.2f}ms", flush=True)
+
+    # Recent transactions
+    t_recent_start = time.perf_counter()
+    recent = get_recent_expenses(user_id, limit=10)
+    t_recent_end = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Recent transactions query: {(t_recent_end - t_recent_start)*1000:.2f}ms", flush=True)
 
     all_categories = sorted(set(list(spend.keys()) + list(eff_budgets.keys())))
     categories = []
@@ -3610,18 +3659,69 @@ def get_dashboard_ranged(
 
     categories.sort(key=lambda x: x["spent"], reverse=True)
 
+    budget_remaining = round(max(0.0, total_budget - total_spent), 2) if total_budget > 0 else 0.0
+
+    total_time_ms = (time.perf_counter() - t_overall_start) * 1000
+    print(f"[DASHBOARD_TIMING] Tier 1 total execution time: {total_time_ms:.2f}ms", flush=True)
+
     return {
         "start_date": start_date,
         "end_date": end_date,
         "is_custom_range": is_custom,
         "total_spent": round(total_spent, 2),
         "total_budget": round(total_budget, 2) if total_budget > 0 else None,
+        "budget_remaining": budget_remaining,
         "categories": categories,
+        "recent_transactions": recent,
         "daily_spend": daily,
         "monthly_trends": monthly_trends,
         "udhar_net": udhar["net"],
         "udhar_lent": udhar["total_lent"],
         "udhar_borrowed": udhar["total_borrowed"],
+        "tier1_time_ms": round(total_time_ms, 2),
+    }
+
+
+def get_dashboard_tier2(user_id: int) -> dict:
+    """Tier 2 dashboard computation: health score, projections, potential savings, AI insight card.
+    Loaded asynchronously after Tier 1 renders.
+    """
+    t_start = time.perf_counter()
+    health_score = compute_health_score(user_id)
+    t_health = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Tier 2: Health score computed in {(t_health - t_start)*1000:.2f}ms", flush=True)
+
+    projections = get_overspending_projections(user_id)
+    t_proj = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Tier 2: Overspending projections computed in {(t_proj - t_health)*1000:.2f}ms", flush=True)
+
+    # Discretionary spend potential savings
+    month = current_month()
+    spend_map = spend_by_category(user_id, month)
+    disc_cats = ["eating out", "shopping", "entertainment", "personal care", "miscellaneous", "food"]
+    disc_spend = sum(spend_map.get(c, 0.0) for c in disc_cats)
+    if disc_spend > 0:
+        potential_savings = round(disc_spend * 0.15)
+        potential_sub = "15% trim on discretionary"
+    else:
+        potential_savings = 0
+        potential_sub = "Track expenses to unlock"
+
+    raw_insights = get_insights(user_id)
+    top_insight = raw_insights[0] if raw_insights else None
+    t_ins = time.perf_counter()
+    print(f"[DASHBOARD_TIMING] Tier 2: AI insights computed in {(t_ins - t_proj)*1000:.2f}ms", flush=True)
+    total_tier2_ms = (t_ins - t_start) * 1000
+    print(f"[DASHBOARD_TIMING] Tier 2: Total execution time {total_tier2_ms:.2f}ms", flush=True)
+
+    return {
+        "health_score": health_score,
+        "projections": projections,
+        "potential_savings": potential_savings,
+        "potential_sub": potential_sub,
+        "insights": raw_insights,
+        "top_insight": top_insight,
+        "tier2_time_ms": round(total_tier2_ms, 2),
     }
 
 

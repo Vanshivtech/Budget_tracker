@@ -5,7 +5,7 @@ pydantic
 bcrypt
 pyjwt
 psycopg2-binary
-
+python-multipart==0.0.20
 langchain
 langgraph == 0.2.20
 langchain-groq

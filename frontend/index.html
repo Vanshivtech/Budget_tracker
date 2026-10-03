@@ -23,7 +23,7 @@
     })();
   </script>
 
-  <link rel="stylesheet" href="/static/styles.css?v=8">
+  <link rel="stylesheet" href="/static/styles.css?v=9">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -34,6 +34,14 @@
        TOAST CONTAINER
        ============================================================ -->
   <div id="toast-container" class="toast-container"></div>
+  <div id="undo-toast-banner" class="undo-toast-banner" style="display:none;" role="status" aria-live="polite">
+    <div class="undo-toast-content">
+      <span id="undo-toast-message">Expense logged</span>
+      <span class="undo-toast-dot">&middot;</span>
+      <button type="button" id="undo-toast-btn" class="undo-toast-action">Undo</button>
+    </div>
+    <button type="button" id="undo-toast-close" class="undo-toast-dismiss" aria-label="Dismiss">&times;</button>
+  </div>
 
   <!-- ============================================================
        AUTH SCREEN
@@ -281,6 +289,17 @@
             </svg>
             Dashboard
           </button>
+          <button class="nav-item" data-view="transactions" id="nav-transactions">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="8" y1="6" x2="21" y2="6"/>
+              <line x1="8" y1="12" x2="21" y2="12"/>
+              <line x1="8" y1="18" x2="21" y2="18"/>
+              <line x1="3" y1="6" x2="3.01" y2="6"/>
+              <line x1="3" y1="12" x2="3.01" y2="12"/>
+              <line x1="3" y1="18" x2="3.01" y2="18"/>
+            </svg>
+            Transactions
+          </button>
           <button class="nav-item" data-view="calendar" id="nav-calendar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
@@ -434,11 +453,100 @@
         <section class="view-panel" id="view-dashboard">
           <div class="dashboard-scroll">
             <div class="dashboard-inner" id="dashboard-inner">
+              <div id="dashboard-quick-add-wrap" style="margin-bottom:20px;"></div>
               <div class="page-loader" id="dashboard-loader">
                 <div class="spinner"></div>
               </div>
               <div id="dashboard-content" style="display:none;">
                 <!-- Populated by JS -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== TRANSACTIONS VIEW ========== -->
+        <section class="view-panel" id="view-transactions">
+          <div class="transactions-scroll">
+            <div class="transactions-inner" id="transactions-inner">
+              <div class="transactions-header">
+                <div class="transactions-header-title">
+                  <h1>Transactions</h1>
+                  <p>Full transaction ledger with date slicing, inline editing, and bulk management</p>
+                </div>
+                <button class="btn-primary btn-sm" id="btn-open-add-expense-modal" style="display:inline-flex;align-items:center;gap:6px;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Add Expense
+                </button>
+              </div>
+
+              <!-- Quick-Add Bar Container in Transactions View -->
+              <div id="tx-quick-add-wrap" style="margin-bottom:20px;"></div>
+
+              <!-- Filter / Slicer Toolbar -->
+              <div class="txn-toolbar-card">
+                <div class="txn-filter-row">
+                  <div class="form-field txn-search-field">
+                    <input type="text" id="tx-search-input" class="form-input" placeholder="Search note, merchant, or category...">
+                  </div>
+                  <div class="form-field txn-cat-filter-field">
+                    <select id="tx-category-filter" class="form-input">
+                      <option value="">All Categories</option>
+                    </select>
+                  </div>
+                  <div class="form-field txn-date-preset-field">
+                    <select id="tx-date-preset" class="form-input">
+                      <option value="this_month">This Month</option>
+                      <option value="last_month">Last Month</option>
+                      <option value="all">All Time</option>
+                      <option value="custom">Custom Range</option>
+                    </select>
+                  </div>
+                  <div class="form-field txn-sort-field">
+                    <select id="tx-sort-select" class="form-input">
+                      <option value="date_desc">Date: Newest First</option>
+                      <option value="date_asc">Date: Oldest First</option>
+                      <option value="amount_desc">Amount: High to Low</option>
+                      <option value="amount_asc">Amount: Low to High</option>
+                      <option value="category_asc">Category: A to Z</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="txn-custom-date-row" id="tx-custom-date-row" style="display:none;margin-top:10px;">
+                  <div class="form-row-2">
+                    <div class="form-field">
+                      <label>From Date</label>
+                      <input type="date" id="tx-date-from" class="form-input">
+                    </div>
+                    <div class="form-field">
+                      <label>To Date</label>
+                      <input type="date" id="tx-date-to" class="form-input">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Bulk Action Bar -->
+              <div class="txn-bulk-bar" id="tx-bulk-bar" style="display:none;">
+                <span id="tx-bulk-count">0 selected</span>
+                <button class="btn-secondary btn-sm danger-text" id="tx-bulk-delete-btn">
+                  Delete Selected
+                </button>
+              </div>
+
+              <div class="page-loader" id="tx-loader" style="display:none;">
+                <div class="spinner"></div>
+              </div>
+
+              <!-- Transactions Table -->
+              <div class="txn-table-card" id="tx-table-container">
+                <!-- Rendered by JS -->
+              </div>
+
+              <!-- Summary / count footer -->
+              <div class="txn-footer-stats" id="tx-footer-stats" style="margin-top:14px;font-size:13px;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center;">
+                <span id="tx-total-count">Showing 0 transactions</span>
+                <span id="tx-total-sum" style="font-weight:600;color:var(--text-primary);">Total: Rs 0</span>
               </div>
             </div>
           </div>
@@ -453,14 +561,23 @@
                   <h1>Udhar</h1>
                   <p>Track money lent to and borrowed from friends</p>
                 </div>
-                <button class="btn-primary btn-sm" id="btn-split-trigger" style="display:inline-flex;align-items:center;gap:6px;">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="8" x2="12" y2="16"/>
-                    <line x1="8" y1="12" x2="16" y2="12"/>
-                  </svg>
-                  Split Expense
-                </button>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <button class="btn-primary btn-sm" id="btn-add-udhar-trigger" style="display:inline-flex;align-items:center;gap:6px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;">
+                      <line x1="12" y1="5" x2="12" y2="19"/>
+                      <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Add Udhar
+                  </button>
+                  <button class="btn-secondary btn-sm" id="btn-split-trigger" style="display:inline-flex;align-items:center;gap:6px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="12" y1="8" x2="12" y2="16"/>
+                      <line x1="8" y1="12" x2="16" y2="12"/>
+                    </svg>
+                    Split Expense
+                  </button>
+                </div>
               </div>
               <div class="page-loader" id="udhar-loader">
                 <div class="spinner"></div>
@@ -695,6 +812,36 @@
                 </div>
               </div>
 
+              <!-- Section: Financial Profile -->
+              <div class="settings-card" id="settings-financial-profile-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <h3>Financial Profile</h3>
+                    <p class="card-subtext" style="margin-top:2px;">Personalize budget suggestions and risk guidance.</p>
+                  </div>
+                  <span id="profile-saved-indicator" class="field-hint" style="color:var(--success, #10B981);display:none;font-weight:600;">Saved</span>
+                </div>
+                <div class="form-row-2" style="margin-top:14px;">
+                  <div class="form-field">
+                    <label for="profile-living-situation">Living Situation</label>
+                    <select id="profile-living-situation" class="form-input">
+                      <option value="family">With family</option>
+                      <option value="alone">Living alone</option>
+                      <option value="pg">PG or hostel</option>
+                      <option value="roommates">With roommates</option>
+                    </select>
+                  </div>
+                  <div class="form-field">
+                    <label for="profile-risk-comfort">Risk Comfort</label>
+                    <select id="profile-risk-comfort" class="form-input">
+                      <option value="low">Low &ndash; I prefer safe options</option>
+                      <option value="medium">Medium &ndash; balanced</option>
+                      <option value="high">High &ndash; I'm okay with risk</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <!-- Section: Change Password -->
               <div class="settings-card" id="settings-change-password-card">
                 <h3>Change Password</h3>
@@ -759,6 +906,40 @@
                 </div>
               </div>
 
+              <!-- Section: Budget Manager -->
+              <div class="settings-card" id="settings-budget-manager-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                  <div>
+                    <h3>Budget Manager</h3>
+                    <p class="card-subtext">Manage monthly spending limits and rollover settings per category.</p>
+                  </div>
+                  <button class="btn-primary btn-sm" id="btn-add-budget-row-trigger" style="display:inline-flex;align-items:center;gap:6px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Budget
+                  </button>
+                </div>
+                <div class="budget-manager-table-wrap" id="budget-manager-container" style="margin-top:14px;overflow-x:auto;">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
+              <!-- Section: Savings Goals -->
+              <div class="settings-card" id="settings-goals-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                  <div>
+                    <h3>Savings Goals</h3>
+                    <p class="card-subtext">Track milestones, make manual contributions, and view required monthly savings.</p>
+                  </div>
+                  <button class="btn-primary btn-sm" id="btn-add-goal-trigger" style="display:inline-flex;align-items:center;gap:6px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Goal
+                  </button>
+                </div>
+                <div class="goals-list-wrap" id="settings-goals-container" style="margin-top:14px;">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
               <!-- Section: Recurring Expenses List -->
               <div class="settings-card">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -812,6 +993,17 @@
             <rect x="14" y="14" width="7" height="7" rx="1"/>
           </svg>
           Dashboard
+        </button>
+        <button class="tab-item" data-view="transactions" id="tab-transactions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="8" y1="6" x2="21" y2="6"/>
+            <line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/>
+            <line x1="3" y1="6" x2="3.01" y2="6"/>
+            <line x1="3" y1="12" x2="3.01" y2="12"/>
+            <line x1="3" y1="18" x2="3.01" y2="18"/>
+          </svg>
+          Txns
         </button>
         <button class="tab-item" data-view="calendar" id="tab-calendar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1114,8 +1306,352 @@
       </div>
     </div>
 
+    <!-- Add / Edit Expense Modal -->
+    <div id="modal-expense-entry" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="expense-modal-title">Add Expense</h3>
+          <button class="modal-close" id="expense-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="expense-edit-id" value="">
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="expense-amount">Amount (Rs) *</label>
+              <input type="number" id="expense-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
+            </div>
+            <div class="form-field">
+              <label for="expense-category">Category *</label>
+              <select id="expense-category" class="form-input" required>
+                <!-- Populated dynamically -->
+              </select>
+            </div>
+          </div>
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="expense-date">Date *</label>
+              <input type="date" id="expense-date" class="form-input" required>
+            </div>
+            <div class="form-field">
+              <label for="expense-merchant">Merchant</label>
+              <input type="text" id="expense-merchant" class="form-input" placeholder="e.g. Swiggy, Amazon, Uber">
+            </div>
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="expense-note">Note / Description</label>
+            <input type="text" id="expense-note" class="form-input" placeholder="e.g. Dinner with team">
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="expense-tag-input">Tags</label>
+            <div id="expense-tags-chips" class="tag-chips-wrap" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:22px;"></div>
+            <div style="position:relative;">
+              <input type="text" id="expense-tag-input" class="form-input" placeholder="Type tag and press Enter or comma..." autocomplete="off">
+              <div id="expense-tag-autocomplete" class="tag-suggestions-dropdown" style="display:none;"></div>
+            </div>
+            <input type="hidden" id="expense-tags" value="">
+            <span class="field-hint">Press Enter or comma to add a tag chip. Click &times; to remove.</span>
+          </div>
+          <div id="expense-modal-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="expense-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="expense-save-btn">Save Expense</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Income Modal -->
+    <div id="modal-income-entry" class="modal-overlay" style="display:none;">
+      <div class="modal-card" style="max-width:440px;">
+        <div class="modal-header">
+          <h3 id="income-modal-title">Add Income</h3>
+          <button class="modal-close" id="income-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-field">
+            <label for="income-amount">Amount (Rs) *</label>
+            <input type="number" id="income-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="income-source">Source</label>
+            <input type="text" id="income-source" class="form-input" placeholder="Salary, Freelance, etc.">
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="income-date">Date *</label>
+            <input type="date" id="income-date" class="form-input" required>
+          </div>
+          <div id="income-modal-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="income-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="income-save-btn">Save Income</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bulk Delete Confirmation Modal -->
+    <div id="modal-bulk-delete" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Confirm Bulk Delete</h3>
+          <button class="modal-close" id="bulk-delete-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-subtext danger-text" id="bulk-delete-desc">Are you sure you want to delete these transactions?</p>
+          <div class="form-field" id="bulk-delete-typed-wrap" style="display:none;margin-top:12px;">
+            <label>Type "DELETE" to confirm deleting more than 10 transactions:</label>
+            <input type="text" id="bulk-delete-typed-input" class="form-input" placeholder="DELETE" autocomplete="off">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="bulk-delete-cancel-btn">Cancel</button>
+          <button class="btn-primary danger-btn" id="bulk-delete-action-btn">Delete Selected</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Budget Row Modal -->
+    <div id="modal-budget-add" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Set Category Budget</h3>
+          <button class="modal-close" id="budget-add-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-field">
+            <label for="budget-add-category">Category *</label>
+            <select id="budget-add-category" class="form-input">
+              <!-- Populated by JS -->
+            </select>
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="budget-add-limit">Monthly Limit (Rs) *</label>
+            <input type="number" id="budget-add-limit" class="form-input" placeholder="e.g. 5000" step="1" min="1" required>
+          </div>
+          <div class="form-checkbox-row" style="margin-top:14px;">
+            <label>
+              <input type="checkbox" id="budget-add-rollover">
+              Enable Rollover (carry unspent amount into next month)
+            </label>
+          </div>
+          <div id="budget-add-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="budget-add-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="budget-add-save-btn">Save Budget</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add / Edit Udhar Entry Modal -->
+    <div id="modal-udhar-entry" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="udhar-modal-title">Add Udhar Entry</h3>
+          <button class="modal-close" id="udhar-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="udhar-edit-id" value="">
+          <datalist id="udhar-person-datalist"></datalist>
+
+          <div class="form-field">
+            <label for="udhar-person-input">Person Name *</label>
+            <input type="text" id="udhar-person-input" class="form-input" list="udhar-person-datalist" placeholder="e.g. Rohan, Priya" required>
+          </div>
+
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="udhar-kind-select">Kind *</label>
+              <select id="udhar-kind-select" class="form-input" required>
+                <option value="lent">Lent (I gave money)</option>
+                <option value="borrowed">Borrowed (I took money)</option>
+                <option value="received_back">Received back (Friend repaid me)</option>
+                <option value="paid_back">Paid back (I repaid friend)</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="udhar-amount-input">Amount (Rs) *</label>
+              <input type="number" id="udhar-amount-input" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
+            </div>
+          </div>
+
+          <!-- Dynamic Client-Side Balance Warning -->
+          <div id="udhar-balance-warning" style="display:none;margin-top:10px;padding:8px 12px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-sm);color:#FBBF24;font-size:12px;line-height:1.4;">
+            Warning: The repayment amount exceeds the recorded balance with this person.
+          </div>
+
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="udhar-date-input">Date *</label>
+              <input type="date" id="udhar-date-input" class="form-input" required>
+            </div>
+            <div class="form-field" id="udhar-due-date-wrap">
+              <label for="udhar-due-date-input">Due Date (Optional)</label>
+              <input type="date" id="udhar-due-date-input" class="form-input">
+            </div>
+          </div>
+
+          <div class="form-field" style="margin-top:12px;">
+            <label for="udhar-note-input">Note (Optional)</label>
+            <input type="text" id="udhar-note-input" class="form-input" placeholder="e.g. Dinner share, concert ticket">
+          </div>
+          <div id="udhar-modal-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="udhar-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="udhar-save-btn">Save Udhar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Udhar Person Ledger Detail Modal -->
+    <div id="modal-udhar-ledger" class="modal-overlay" style="display:none;">
+      <div class="modal-card" style="max-width:680px;">
+        <div class="modal-header">
+          <div>
+            <h3 id="udhar-ledger-title">Person Ledger</h3>
+            <span id="udhar-ledger-subtitle" style="font-size:12px;color:var(--text-secondary);"></span>
+          </div>
+          <button class="modal-close" id="udhar-ledger-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:14px 22px;">
+          <div id="udhar-ledger-table-wrap" style="max-height:360px;overflow-y:auto;">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+        <div class="modal-footer" style="justify-content:space-between;">
+          <button class="btn-primary btn-sm" id="udhar-ledger-add-entry-btn">Add Entry for this Person</button>
+          <button class="btn-secondary" id="udhar-ledger-done-btn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add / Edit Savings Goal Modal -->
+    <div id="modal-goal-entry" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="goal-modal-title">Add Savings Goal</h3>
+          <button class="modal-close" id="goal-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="goal-edit-id" value="">
+          <div class="form-field">
+            <label for="goal-name-input">Goal Name *</label>
+            <input type="text" id="goal-name-input" class="form-input" placeholder="e.g. Goa Trip, New Laptop, Emergency Fund" required>
+          </div>
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="goal-target-input">Target Amount (Rs) *</label>
+              <input type="number" id="goal-target-input" class="form-input" placeholder="e.g. 50000" step="100" min="1" required>
+            </div>
+            <div class="form-field">
+              <label for="goal-date-input">Target Date (Optional)</label>
+              <input type="date" id="goal-date-input" class="form-input">
+            </div>
+          </div>
+          <div id="goal-modal-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="goal-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="goal-save-btn">Save Goal</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Contribute to Savings Goal Modal -->
+    <div id="modal-goal-contribute" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="contrib-goal-title">Add Contribution</h3>
+          <button class="modal-close" id="contrib-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="contrib-goal-id" value="">
+          <p id="contrib-goal-desc" class="modal-subtext" style="margin-bottom:12px;"></p>
+          <div class="form-field">
+            <label for="contrib-amount-input">Contribution Amount (Rs) *</label>
+            <input type="number" id="contrib-amount-input" class="form-input" placeholder="e.g. 5000" step="10" min="1" required>
+          </div>
+          <div class="form-field" style="margin-top:12px;">
+            <label for="contrib-note-input">Note (Optional)</label>
+            <input type="text" id="contrib-note-input" class="form-input" placeholder="e.g. Bonus savings, monthly transfer">
+          </div>
+          <div id="contrib-modal-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="contrib-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="contrib-save-btn">Add Contribution</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Recurring Expense Modal -->
+    <div id="modal-recurring-edit" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Edit Recurring Bill</h3>
+          <button class="modal-close" id="rec-edit-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="rec-edit-id" value="">
+          <div class="form-field">
+            <label for="rec-edit-name">Bill / Subscription Name *</label>
+            <input type="text" id="rec-edit-name" class="form-input" placeholder="e.g. Netflix, Rent, Wifi" required>
+          </div>
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="rec-edit-amount">Amount (Rs) *</label>
+              <input type="number" id="rec-edit-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
+            </div>
+            <div class="form-field">
+              <label for="rec-edit-category">Category *</label>
+              <select id="rec-edit-category" class="form-input">
+                <!-- Populated dynamically -->
+              </select>
+            </div>
+          </div>
+          <div class="form-row-2" style="margin-top:12px;">
+            <div class="form-field">
+              <label for="rec-edit-frequency">Frequency *</label>
+              <select id="rec-edit-frequency" class="form-input">
+                <option value="monthly">Monthly</option>
+                <option value="weekly">Weekly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="rec-edit-due-date">Next Due Date *</label>
+              <input type="date" id="rec-edit-due-date" class="form-input" required>
+            </div>
+          </div>
+          <div id="rec-edit-error" class="field-hint danger-text" style="display:none;margin-top:8px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="rec-edit-cancel-btn">Cancel</button>
+          <button class="btn-primary" id="rec-edit-save-btn">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simple Destructive Action Modal -->
+    <div id="modal-simple-confirm" class="modal-overlay" style="display:none;">
+      <div class="modal-card" style="max-width:440px;">
+        <div class="modal-header">
+          <h3 id="simple-confirm-title">Confirm Action</h3>
+          <button class="modal-close" id="simple-confirm-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p id="simple-confirm-desc" class="modal-subtext danger-text">Are you sure you want to proceed?</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="simple-confirm-cancel">Cancel</button>
+          <button class="btn-primary danger-btn" id="simple-confirm-action">Confirm</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

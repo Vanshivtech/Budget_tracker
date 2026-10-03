@@ -44,6 +44,33 @@ def validate_file_content(content: bytes) -> Tuple[bool, str, str, str]:
     return False, "", "", "Unsupported file type. Only JPG, PNG, and PDF files are allowed."
 
 
+MAX_AVATAR_SIZE = 2 * 1024 * 1024
+
+
+def validate_avatar_file(content: bytes) -> Tuple[bool, str, str, str]:
+    """Validate avatar photo size (max 2MB) and content type (JPG or PNG only).
+    Returns: (is_valid, mime_type, file_extension, error_message)
+    """
+    if len(content) == 0:
+        return False, "", "", "Uploaded file is empty."
+
+    if len(content) > MAX_AVATAR_SIZE:
+        return False, "", "", "File exceeds maximum allowed size of 2 MB."
+
+    # JPEG magic bytes: FF D8 FF
+    if content.startswith(b"\xff\xd8\xff"):
+        return True, "image/jpeg", "jpg", ""
+
+    # PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True, "image/png", "png", ""
+
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return False, "", "", "GIF format is not supported. Please upload a JPG or PNG photo."
+
+    return False, "", "", "Unsupported file type. Only JPG and PNG photos are allowed."
+
+
 def get_storage_path(user_id: int, transaction_id: int, ext: str) -> str:
     """Generate path in the format: {user_id}/{transaction_id}/{uuid}.{ext}"""
     file_id = uuid.uuid4().hex

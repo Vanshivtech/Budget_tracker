@@ -421,7 +421,7 @@ def batch_llm_categorize(
     if not uncategorized_items:
         return {}
 
-    from app.llm import execute_with_fallback
+    from app.llm import llm_pool
     from langchain_core.messages import SystemMessage, HumanMessage
 
     cats_str = ", ".join(allowed_categories)
@@ -446,8 +446,14 @@ def batch_llm_categorize(
         HumanMessage(content=prompt),
     ]
 
+    def _invoke(model, msgs, _cfg):
+        return model.invoke(msgs).content
+
     try:
-        response_text = execute_with_fallback(messages)
+        response_text = llm_pool.invoke_with_retry(_invoke, messages, None)
+        if not isinstance(response_text, str) or not response_text.strip():
+            logger.warning("LLM categorization returned empty or non-string response")
+            return {}
         # Clean json
         clean_text = response_text.strip()
         if clean_text.startswith("```"):
