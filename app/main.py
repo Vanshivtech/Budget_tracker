@@ -66,6 +66,7 @@ from app.llm import llm_pool
 from app.storage import (
     validate_file_content, upload_to_storage, get_storage_path,
     delete_from_storage, get_signed_url, get_file_bytes, ocr_receipt_hook,
+    validate_avatar_file,
 )
 from app.importer import (
     parse_csv_content, parse_plain_text_statements, categorize_by_rule,
@@ -514,9 +515,16 @@ def dashboard(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     range: str | None = Query(None),
+    tier: str | None = Query(None),
 ):
-    """Full dashboard data with optional date range slicer.
-    range can be: this_month, last_month, last_3_months, or custom (with start_date/end_date)."""
+    """Dashboard data endpoint.
+    By default returns Tier 1 (fast SQL aggregates <500ms): total spend, budget remaining,
+    categories, and recent transactions.
+    If tier=2 is requested, returns Tier 2 data.
+    """
+    if tier == "2":
+        return dashboard_tier2(user=user)
+
     from datetime import date as d_date
     import calendar as cal
 
@@ -542,7 +550,19 @@ def dashboard(
         ed = f"{month}-{cal.monthrange(y, m)[1]}"
 
     data = get_dashboard_ranged(user_id=user["id"], start_date=sd, end_date=ed)
-    data["projections"] = get_overspending_projections(user["id"])
+    data["user_id"] = user["id"]
+    if tier == "full":
+        data["projections"] = get_overspending_projections(user["id"])
+    return data
+
+
+@app.get("/api/dashboard/tier2")
+@app.get("/api/dashboard/tier-2")
+def dashboard_tier2(user: dict = Depends(get_current_user)):
+    """Tier 2 expensive computations (health score, projections, potential savings, AI insights).
+    Loaded asynchronously after Tier 1 renders.
+    """
+    data = get_dashboard_tier2(user["id"])
     data["user_id"] = user["id"]
     return data
 
@@ -757,6 +777,7 @@ def user_display(user: dict = Depends(get_current_user)):
 
 
 @app.patch("/api/user/username")
+@app.post("/api/user/username")
 def user_set_username(req: UsernameRequest, user: dict = Depends(get_current_user)):
     """Set or update the user's display name."""
     try:
@@ -766,9 +787,63 @@ def user_set_username(req: UsernameRequest, user: dict = Depends(get_current_use
 
 
 @app.patch("/api/user/avatar")
+@app.post("/api/user/avatar")
 def user_set_avatar(req: AvatarRequest, user: dict = Depends(get_current_user)):
     """Set the user's avatar (1-8)."""
     return set_avatar(user["id"], req.avatar_id)
+
+
+@app.post("/api/user/avatar-upload")
+async def user_avatar_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Upload custom avatar profile photo (JPG or PNG, max 2MB)."""
+    if not settings.SUPABASE_SERVICE_ROLE_KEY or not settings.get_supabase_url():
+        raise HTTPException(
+            status_code=503,
+            detail="Photo upload requires cloud storage to be configured"
+        )
+
+    content = await file.read()
+    is_valid, mime, ext, err_msg = validate_avatar_file(content)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    storage_path = f"avatars/{user['id']}/profile.{ext}"
+    uploaded = upload_to_storage(storage_path, content, mime)
+    if not uploaded:
+        raise HTTPException(status_code=500, detail="Failed to upload avatar photo to storage")
+
+    set_user_avatar_url(user["id"], storage_path)
+    signed_url = get_signed_url(storage_path, expires_in_seconds=3600)
+    return {
+        "status": "ok",
+        "avatar_url": storage_path,
+        "signed_url": signed_url,
+    }
+
+
+@app.get("/api/user/avatar-url")
+def user_avatar_url(user: dict = Depends(get_current_user)):
+    """Get signed URL for user's uploaded avatar photo, or null if using preset icon."""
+    user_info = get_user_display(user["id"])
+    path = user_info.get("avatar_url")
+    if not path:
+        return {"signed_url": None}
+    signed_url = get_signed_url(path, expires_in_seconds=3600)
+    return {"signed_url": signed_url}
+
+
+@app.delete("/api/user/avatar-photo")
+def user_remove_avatar_photo(user: dict = Depends(get_current_user)):
+    """Remove user's uploaded avatar photo and revert to preset icon."""
+    user_info = get_user_display(user["id"])
+    path = user_info.get("avatar_url")
+    if path:
+        delete_from_storage(path)
+    set_user_avatar_url(user["id"], None)
+    return {"status": "ok"}
 
 
 # ---------- Custom Categories ----------
