@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ABT Admin Console</title>
+  <title>SAARTH Admin Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -502,7 +502,7 @@
     <!-- Navbar -->
     <header class="admin-navbar">
       <div class="navbar-brand">
-        <span class="brand-title">ABT</span>
+        <span class="brand-title">SAARTH</span>
         <span class="badge badge-amber">ADMIN CONSOLE</span>
       </div>
       <nav class="navbar-tabs">
@@ -891,15 +891,15 @@
           <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;">
             <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
               <span style="font-size:11px;color:var(--text-dim);">Lent Total</span>
-              <div id="detail-lent" style="font-weight:700;font-size:15px;color:var(--success);margin-top:2px;">Rs 0</div>
+              <div id="detail-lent" style="font-weight:700;font-size:15px;color:var(--success);margin-top:2px;">₹0</div>
             </div>
             <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
               <span style="font-size:11px;color:var(--text-dim);">Borrowed Total</span>
-              <div id="detail-borrowed" style="font-weight:700;font-size:15px;color:var(--danger);margin-top:2px;">Rs 0</div>
+              <div id="detail-borrowed" style="font-weight:700;font-size:15px;color:var(--danger);margin-top:2px;">₹0</div>
             </div>
             <div style="background:var(--bg-card);padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
               <span style="font-size:11px;color:var(--text-dim);">Net Position</span>
-              <div id="detail-net" style="font-weight:700;font-size:15px;margin-top:2px;">Rs 0</div>
+              <div id="detail-net" style="font-weight:700;font-size:15px;margin-top:2px;">₹0</div>
             </div>
           </div>
         </div>
@@ -1376,11 +1376,11 @@
 
           // Udhar
           const udh = det.udhar_summary || {};
-          document.getElementById('detail-lent').textContent = `Rs ${(udh.total_lent || 0).toLocaleString()}`;
-          document.getElementById('detail-borrowed').textContent = `Rs ${(udh.total_borrowed || 0).toLocaleString()}`;
+          document.getElementById('detail-lent').textContent = `₹${(udh.total_lent || 0).toLocaleString()}`;
+          document.getElementById('detail-borrowed').textContent = `₹${(udh.total_borrowed || 0).toLocaleString()}`;
           const net = udh.net_balance || 0;
           const netEl = document.getElementById('detail-net');
-          netEl.textContent = `Rs ${net.toLocaleString()}`;
+          netEl.textContent = `₹${net.toLocaleString()}`;
           netEl.style.color = net >= 0 ? 'var(--success)' : 'var(--danger)';
 
           // Budgets
@@ -1394,7 +1394,7 @@
               const tr = document.createElement('tr');
               tr.innerHTML = `
                 <td><strong>${escapeHtml(b.category)}</strong></td>
-                <td>Rs ${b.monthly_limit.toLocaleString()}</td>
+                <td>₹${b.monthly_limit.toLocaleString()}</td>
                 <td>${b.rollover_enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-neutral">Off</span>'}</td>
               `;
               bTbody.appendChild(tr);
@@ -1413,7 +1413,7 @@
               const dStr = t.date ? new Date(t.date).toLocaleDateString() : '';
               tr.innerHTML = `
                 <td>${dStr}</td>
-                <td><strong>Rs ${t.amount.toLocaleString()}</strong></td>
+                <td><strong>₹${t.amount.toLocaleString()}</strong></td>
                 <td>${escapeHtml(t.category)}</td>
                 <td>${escapeHtml(t.merchant || '-')}</td>
               `;

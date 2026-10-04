@@ -1,9 +1,10 @@
-/* ABT Service Worker — app-shell caching */
-const CACHE_NAME = 'abt-v9';
+/* SAARTH Service Worker — app-shell caching */
+const CACHE_NAME = 'saarth-v10';
 const SHELL_ASSETS = [
   '/',
   '/static/styles.css',
   '/static/app.js',
+  '/static/logo_saarth.png',
   '/static/Logo_ABT.png',
   '/static/favicon.png',
   '/static/icon-192.png',

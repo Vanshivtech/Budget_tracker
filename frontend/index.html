@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#0B0D11">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="ABT">
-  <meta name="description" content="ABT - AI Budget Tracker. Track expenses, build savings, and grow good money habits with your AI financial assistant.">
+  <meta name="apple-mobile-web-app-title" content="SAARTH">
+  <meta name="description" content="SAARTH — AI-powered personal finance assistant. Make money meaningful.">
 
-  <title>ABT - AI Budget Tracker</title>
+  <title>SAARTH — Make money meaningful</title>
 
   <script>
     (function() {
@@ -23,7 +23,7 @@
     })();
   </script>
 
-  <link rel="stylesheet" href="/static/styles.css?v=9">
+  <link rel="stylesheet" href="/static/styles.css?v=10">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -59,8 +59,9 @@
     </div>
     <div class="auth-container">
       <div class="auth-logo">
-        <img src="/static/Logo_ABT.png" alt="ABT" id="auth-logo-img">
-        <span class="auth-tagline">Your AI financial assistant</span>
+        <img src="/static/logo_saarth.png" alt="SAARTH" id="auth-logo-img">
+        <h1 class="auth-brand-name">SAARTH</h1>
+        <span class="auth-tagline">Make money meaningful</span>
       </div>
 
       <div class="auth-card">
@@ -93,10 +94,8 @@
        ONBOARDING WIZARD
        ============================================================ -->
   <div id="onboarding-screen" style="display:none;">
-    <div class="onboarding-container">
-
-      <div class="onboarding-header">
-        <img src="/static/Logo_ABT.png" alt="ABT" class="onboarding-logo">
+    <div class="onboarding-container">      <div class="onboarding-header">
+        <img src="/static/logo_saarth.png" alt="SAARTH" class="onboarding-logo">
         <div class="onboarding-progress">
           <div class="progress-steps">
             <div class="progress-step active" data-step="1"><span>1</span></div>
@@ -175,7 +174,7 @@
 
         <div class="ob-income-wrap">
           <div class="ob-income-field">
-            <span class="ob-currency-prefix">Rs</span>
+            <span class="ob-currency-prefix">₹</span>
             <input type="number" id="ob-income-input" placeholder="e.g. 30000" min="0" step="1000" autocomplete="off">
           </div>
           <p class="ob-income-hint">Salary, freelance, or any regular monthly income. Leave empty to skip.</p>
@@ -222,7 +221,7 @@
   </div>
 
   <!-- ============================================================
-       APP SCREEN
+       MAIN APP INTERFACE
        ============================================================ -->
   <div id="app-screen">
 
@@ -233,7 +232,10 @@
 
     <!-- Mobile Top Bar -->
     <div class="mobile-topbar" id="mobile-topbar">
-      <img src="/static/Logo_ABT.png" alt="ABT" style="height:24px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <img src="/static/logo_saarth.png" alt="SAARTH" style="height:26px;object-fit:contain;">
+        <span style="font-weight:700;font-size:16px;color:var(--text-primary);letter-spacing:0.5px;">SAARTH</span>
+      </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <button type="button" class="theme-toggle" id="theme-toggle-mobile" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -262,7 +264,10 @@
       <!-- Sidebar -->
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-logo">
-          <img src="/static/Logo_ABT.png" alt="ABT">
+          <div class="sidebar-brand-wrap" style="display:flex;align-items:center;gap:10px;">
+            <img src="/static/logo_saarth.png" alt="SAARTH" class="sidebar-logo-img" style="width:28px;height:28px;object-fit:contain;">
+            <span class="sidebar-brand-name" style="font-size:16px;font-weight:700;letter-spacing:0.5px;color:var(--text-primary);">SAARTH</span>
+          </div>
           <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
             <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
@@ -274,82 +279,89 @@
         </div>
 
         <nav class="sidebar-nav">
-          <button class="nav-item active" data-view="chat" id="nav-chat" data-tooltip="Chat with your AI financial assistant" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-            </svg>
-            Chat
-          </button>
-          <button class="nav-item" data-view="dashboard" id="nav-dashboard" data-tooltip="Monthly budget overview and spending metrics" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="7" height="7" rx="1"/>
-              <rect x="14" y="3" width="7" height="7" rx="1"/>
-              <rect x="3" y="14" width="7" height="7" rx="1"/>
-              <rect x="14" y="14" width="7" height="7" rx="1"/>
-            </svg>
-            Dashboard
-          </button>
-          <button class="nav-item" data-view="transactions" id="nav-transactions" data-tooltip="View, filter, edit, and export your expense transactions" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="8" y1="6" x2="21" y2="6"/>
-              <line x1="8" y1="12" x2="21" y2="12"/>
-              <line x1="8" y1="18" x2="21" y2="18"/>
-              <line x1="3" y1="6" x2="3.01" y2="6"/>
-              <line x1="3" y1="12" x2="3.01" y2="12"/>
-              <line x1="3" y1="18" x2="3.01" y2="18"/>
-            </svg>
-            Transactions
-          </button>
-          <button class="nav-item" data-view="calendar" id="nav-calendar" data-tooltip="Visual daily cash-flow and upcoming bills calendar" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-              <line x1="16" y1="2" x2="16" y2="6"/>
-              <line x1="8" y1="2" x2="8" y2="6"/>
-              <line x1="3" y1="10" x2="21" y2="10"/>
-            </svg>
-            Calendar
-          </button>
-          <button class="nav-item" data-view="bills" id="nav-bills" data-tooltip="Manage recurring bills and receipt attachments" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-            Bills & Receipts
-          </button>
-          <button class="nav-item" data-view="import" id="nav-import" data-tooltip="Import bank statements from CSV or text" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            Statement Import
-          </button>
-          <button class="nav-item" data-view="udhar" id="nav-udhar" data-tooltip="Track money lent to or borrowed from others" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87"/>
-              <path d="M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            Udhar
-          </button>
-          <button class="nav-item" data-view="insights" id="nav-insights" data-tooltip="AI financial insights and spending habits" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="20" x2="18" y2="10"/>
-              <line x1="12" y1="20" x2="12" y2="4"/>
-              <line x1="6" y1="20" x2="6" y2="14"/>
-            </svg>
-            Insights
-          </button>
-          <button class="nav-item" data-view="settings" id="nav-settings" data-tooltip="Manage account, budgets, and preferences" data-tooltip-pos="right">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-            Settings
-          </button>
+          <div class="nav-group-primary">
+            <button class="nav-item nav-item-primary active" data-view="chat" id="nav-chat" data-tooltip="Chat with your AI financial assistant" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+              </svg>
+              <span>Chat</span>
+            </button>
+            <button class="nav-item nav-item-primary" data-view="dashboard" id="nav-dashboard" data-tooltip="Monthly budget overview and spending metrics" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1"/>
+                <rect x="14" y="3" width="7" height="7" rx="1"/>
+                <rect x="3" y="14" width="7" height="7" rx="1"/>
+                <rect x="14" y="14" width="7" height="7" rx="1"/>
+              </svg>
+              <span>Dashboard</span>
+            </button>
+          </div>
+
+          <div class="nav-divider" style="height:1px;background:var(--border-subtle);margin:8px 12px;"></div>
+
+          <div class="nav-group-secondary">
+            <button class="nav-item" data-view="transactions" id="nav-transactions" data-tooltip="View, filter, edit, and export your expense transactions" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6"/>
+                <line x1="8" y1="12" x2="21" y2="12"/>
+                <line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/>
+                <line x1="3" y1="12" x2="3.01" y2="12"/>
+                <line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+              <span>Transactions</span>
+            </button>
+            <button class="nav-item" data-view="calendar" id="nav-calendar" data-tooltip="Visual daily cash-flow and upcoming bills calendar" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              <span>Calendar</span>
+            </button>
+            <button class="nav-item" data-view="bills" id="nav-bills" data-tooltip="Manage recurring bills and receipt attachments" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+              <span>Bills</span>
+            </button>
+            <button class="nav-item" data-view="import" id="nav-import" data-tooltip="Import bank statements from CSV or text" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>Import</span>
+            </button>
+            <button class="nav-item" data-view="udhar" id="nav-udhar" data-tooltip="Track money lent to or borrowed from others" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 00-3-3.87"/>
+                <path d="M16 3.13a4 4 0 010 7.75"/>
+              </svg>
+              <span>Udhar</span>
+            </button>
+            <button class="nav-item" data-view="insights" id="nav-insights" data-tooltip="Financial insights and spending habits" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="20" x2="18" y2="10"/>
+                <line x1="12" y1="20" x2="12" y2="4"/>
+                <line x1="6" y1="20" x2="6" y2="14"/>
+              </svg>
+              <span>Analysis</span>
+            </button>
+            <button class="nav-item" data-view="settings" id="nav-settings" data-tooltip="Profile, budgets, goals & account" data-tooltip-pos="right">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span>Settings</span>
+            </button>
+          </div>
         </nav>
 
         <div class="sidebar-footer">
@@ -383,7 +395,7 @@
                 <!-- Welcome State (shown when no messages) -->
                 <div class="chat-welcome" id="chat-welcome">
                   <div class="chat-welcome-logo">
-                    <img src="/static/Logo_ABT.png" alt="ABT">
+                    <img src="/static/logo_saarth.png" alt="SAARTH">
                   </div>
                   <h2>How can I help?</h2>
                   <p>Your AI money companion. Track expenses, build savings goals, and ask about your financial health.</p>
@@ -391,20 +403,20 @@
                   <div class="glance-card" id="glance-card">
                     <div class="glance-header">
                       <span>At a Glance</span>
-                      <span class="glance-streak" id="glance-streak">-- day streak</span>
+                      <span class="glance-streak glance-empty-prompt" id="glance-streak">Log today to start your streak</span>
                     </div>
                     <div class="glance-stats">
                       <div class="glance-stat">
                         <label>Safe to spend today</label>
-                        <span class="value" id="glance-safe">--</span>
+                        <span class="value glance-empty-prompt" id="glance-safe">Add income to calculate</span>
                       </div>
                       <div class="glance-stat">
                         <label>Savings rate</label>
-                        <span class="value" id="glance-savings">--</span>
+                        <span class="value glance-empty-prompt" id="glance-savings">Add income to calculate</span>
                       </div>
                       <div class="glance-stat">
                         <label>Top Goal</label>
-                        <span class="value" id="glance-goal">--</span>
+                        <span class="value glance-empty-prompt" id="glance-goal">Set a goal in Settings</span>
                       </div>
                     </div>
                   </div>
@@ -429,13 +441,13 @@
             </div>
 
             <!-- Jump to latest -->
-            <button class="jump-latest" id="jump-latest">Jump to latest</button>
+            <button class="jump-latest" id="jump-latest" style="display:none;">Jump to latest</button>
 
             <!-- Composer -->
             <div class="composer">
               <div class="composer-inner">
                 <textarea class="composer-input" id="composer-input"
-                  placeholder="Message ABT..."
+                  placeholder="Message SAARTH..."
                   rows="1"
                   aria-label="Message input"></textarea>
                 <button class="composer-send" id="composer-send" disabled aria-label="Send message">
@@ -546,7 +558,7 @@
               <!-- Summary / count footer -->
               <div class="txn-footer-stats" id="tx-footer-stats" style="margin-top:14px;font-size:13px;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center;">
                 <span id="tx-total-count">Showing 0 transactions</span>
-                <span id="tx-total-sum" style="font-weight:600;color:var(--text-primary);">Total: Rs 0</span>
+                <span id="tx-total-sum" style="font-weight:600;color:var(--text-primary);">Total: ₹0</span>
               </div>
             </div>
           </div>
@@ -594,8 +606,8 @@
           <div class="insights-scroll">
             <div class="insights-inner" id="insights-inner">
               <div class="insights-header">
-                <h1>Insights</h1>
-                <p>AI-powered analysis of your spending habits</p>
+                <h1>Analysis</h1>
+                <p>Spending habits, patterns, and category breakdowns</p>
               </div>
               <div class="page-loader" id="insights-loader">
                 <div class="spinner"></div>
@@ -631,19 +643,19 @@
               <div class="cal-kpi-bar" id="cal-kpi-bar">
                 <div class="cal-kpi-card">
                   <span class="cal-kpi-label">Bills Scheduled</span>
-                  <span class="cal-kpi-val danger" id="cal-kpi-bills">Rs 0</span>
+                  <span class="cal-kpi-val danger" id="cal-kpi-bills">₹0</span>
                 </div>
                 <div class="cal-kpi-card">
                   <span class="cal-kpi-label">Udhar Receivable</span>
-                  <span class="cal-kpi-val success" id="cal-kpi-receivable">Rs 0</span>
+                  <span class="cal-kpi-val success" id="cal-kpi-receivable">₹0</span>
                 </div>
                 <div class="cal-kpi-card">
                   <span class="cal-kpi-label">Udhar Payable</span>
-                  <span class="cal-kpi-val danger" id="cal-kpi-payable">Rs 0</span>
+                  <span class="cal-kpi-val danger" id="cal-kpi-payable">₹0</span>
                 </div>
                 <div class="cal-kpi-card">
                   <span class="cal-kpi-label">Projected Net End</span>
-                  <span class="cal-kpi-val" id="cal-kpi-balance">Rs 0</span>
+                  <span class="cal-kpi-val" id="cal-kpi-balance">₹0</span>
                 </div>
               </div>
 
@@ -729,7 +741,7 @@
 
                 <div id="import-text-panel" style="display:none;">
                   <label for="import-text-area" style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:6px;">Paste statement lines or UPI notifications:</label>
-                  <textarea id="import-text-area" class="form-input" rows="7" placeholder="e.g.&#10;Paid Rs. 350 to Swiggy on 12-10-2026&#10;14/10/2026 A/c debited by INR 1,200 for Uber&#10;Spent Rs 450 at DMart on 15 Oct&#10;Credited INR 50,000 from Salary on 01-10-2026"></textarea>
+                  <textarea id="import-text-area" class="form-input" rows="7" placeholder="e.g.&#10;Paid ₹350 to Swiggy on 12-10-2026&#10;14/10/2026 A/c debited by INR 1,200 for Uber&#10;Spent ₹450 at DMart on 15 Oct&#10;Credited INR 50,000 from Salary on 01-10-2026"></textarea>
                 </div>
 
                 <div style="margin-top:16px;display:flex;justify-content:flex-end;">
@@ -782,7 +794,7 @@
             <div class="settings-inner" id="settings-inner">
               <div class="settings-header">
                 <h1>Settings</h1>
-                <p>Manage your profile, push notifications, categories, and account data</p>
+                <p>Profile, budgets, goals & account</p>
               </div>
 
               <!-- Section: Profile & Identity -->
@@ -795,22 +807,7 @@
                       <!-- 8 Preset SVG icons populated by JS -->
                     </div>
 
-                    <!-- Custom Photo Upload Section -->
-                    <div class="photo-upload-section">
-                      <span class="photo-upload-label">Or upload your own photo</span>
-                      <div class="photo-upload-controls">
-                        <div class="photo-preview-wrap" id="photo-preview-wrap">
-                          <span id="photo-preview-placeholder" style="font-size:11px;color:var(--text-tertiary);text-align:center;">No photo</span>
-                          <img id="photo-preview-img" class="photo-preview-img" style="display:none;" alt="Profile photo preview">
-                        </div>
-                        <div class="photo-upload-actions">
-                          <input type="file" id="avatar-photo-file-input" accept="image/jpeg,image/png" style="display:none;">
-                          <button type="button" class="btn-secondary btn-sm" id="btn-trigger-photo-upload" data-tooltip="Choose a JPG or PNG photo (max 2 MB)">Upload Photo</button>
-                          <button type="button" class="btn-secondary btn-sm danger-text" id="btn-remove-photo" style="display:none;" data-tooltip="Remove uploaded photo and revert to preset icon">Remove photo</button>
-                        </div>
-                      </div>
-                      <div id="photo-upload-error" class="field-hint" style="color:var(--danger, #ef4444);display:none;margin-top:6px;"></div>
-                    </div>
+                    <!-- TODO: Photo upload UI will go here when Supabase storage service role integration is complete -->
                   </div>
                   <div class="username-field-wrap">
                     <div class="form-field">
@@ -977,7 +974,7 @@
                 <p class="card-subtext">Export your complete financial records or reset data. All deletions are irreversible.</p>
 
                 <div class="data-actions-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:14px;">
-                  <button class="btn-secondary" id="btn-settings-redo-onboarding" data-tooltip="Reset and redo the budget setup wizard">Redo Budget Setup</button>
+                  <button class="btn-secondary" id="btn-settings-redo-onboarding" data-tooltip="Reset and redo the budget setup wizard">Update Budget Preferences</button>
                   <button class="btn-secondary" id="btn-settings-export-json" data-tooltip="Download all transactions, budgets, and udhar records as JSON">Export Complete Data (JSON)</button>
                   <button class="btn-secondary danger-text" id="btn-clear-tx-trigger" data-tooltip="Permanently delete all transaction records (irreversible)">Clear Transactions</button>
                   <button class="btn-secondary danger-text" id="btn-clear-udhar-trigger" data-tooltip="Permanently delete all lending and borrowing entries (irreversible)">Clear Udhar</button>
@@ -1011,34 +1008,20 @@
           </svg>
           Dashboard
         </button>
-        <button class="tab-item" data-view="transactions" id="tab-transactions" data-tooltip="View and manage expenses">
+        <button class="tab-item" data-view="udhar" id="tab-udhar" data-tooltip="Track money lent to or borrowed from people">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="8" y1="6" x2="21" y2="6"/>
-            <line x1="8" y1="12" x2="21" y2="12"/>
-            <line x1="8" y1="18" x2="21" y2="18"/>
-            <line x1="3" y1="6" x2="3.01" y2="6"/>
-            <line x1="3" y1="12" x2="3.01" y2="12"/>
-            <line x1="3" y1="18" x2="3.01" y2="18"/>
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
           </svg>
-          Txns
+          Udhar
         </button>
-        <button class="tab-item" data-view="calendar" id="tab-calendar" data-tooltip="Daily cash-flow calendar">
+        <button class="tab-item" data-view="insights" id="tab-insights" data-tooltip="Spending analysis and patterns">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-            <line x1="16" y1="2" x2="16" y2="6"/>
-            <line x1="8" y1="2" x2="8" y2="6"/>
-            <line x1="3" y1="10" x2="21" y2="10"/>
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
           </svg>
-          Calendar
-        </button>
-        <button class="tab-item" data-view="bills" id="tab-bills" data-tooltip="Recurring bills and receipts">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/>
-            <line x1="16" y1="17" x2="8" y2="17"/>
-          </svg>
-          Bills
+          Analysis
         </button>
         <button class="tab-item" data-view="settings" id="tab-settings" data-tooltip="Settings and profile">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1121,7 +1104,7 @@
           </div>
           <div class="form-row-2">
             <div class="form-field">
-              <label for="rec-amount">Amount (Rs)</label>
+              <label for="rec-amount">Amount (₹)</label>
               <input type="number" id="rec-amount" class="form-input" placeholder="e.g. 12000" min="1" step="1" required>
             </div>
             <div class="form-field">
@@ -1168,7 +1151,7 @@
         <div class="modal-body">
           <div class="form-row-2">
             <div class="form-field">
-              <label for="split-amount">Total Amount Paid (Rs)</label>
+              <label for="split-amount">Total Amount Paid (₹)</label>
               <input type="number" id="split-amount" class="form-input" placeholder="e.g. 1500" min="1" step="1" required>
             </div>
             <div class="form-field">
@@ -1193,8 +1176,8 @@
             <span class="field-hint">The expense will be logged under your spending, and Udhar lent records will be generated for friends.</span>
           </div>
           <div class="split-calc-preview" id="split-calc-preview" style="display:none;">
-            <div class="calc-row"><span>Your share:</span> <strong id="preview-user-share">Rs 0</strong></div>
-            <div class="calc-row"><span>Friends owe you:</span> <strong id="preview-friends-share" class="lent-color">Rs 0</strong></div>
+            <div class="calc-row"><span>Your share:</span> <strong id="preview-user-share">₹0</strong></div>
+            <div class="calc-row"><span>Friends owe you:</span> <strong id="preview-friends-share" class="lent-color">₹0</strong></div>
           </div>
         </div>
         <div class="modal-footer">
@@ -1334,7 +1317,7 @@
           <input type="hidden" id="expense-edit-id" value="">
           <div class="form-row-2">
             <div class="form-field">
-              <label for="expense-amount">Amount (Rs) *</label>
+              <label for="expense-amount">Amount (₹) *</label>
               <input type="number" id="expense-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
             </div>
             <div class="form-field">
@@ -1386,7 +1369,7 @@
         </div>
         <div class="modal-body">
           <div class="form-field">
-            <label for="income-amount">Amount (Rs) *</label>
+            <label for="income-amount">Amount (₹) *</label>
             <input type="number" id="income-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
           </div>
           <div class="form-field" style="margin-top:12px;">
@@ -1442,7 +1425,7 @@
             </select>
           </div>
           <div class="form-field" style="margin-top:12px;">
-            <label for="budget-add-limit">Monthly Limit (Rs) *</label>
+            <label for="budget-add-limit">Monthly Limit (₹) *</label>
             <input type="number" id="budget-add-limit" class="form-input" placeholder="e.g. 5000" step="1" min="1" required>
           </div>
           <div class="form-checkbox-row" style="margin-top:14px;">
@@ -1487,7 +1470,7 @@
               </select>
             </div>
             <div class="form-field">
-              <label for="udhar-amount-input">Amount (Rs) *</label>
+              <label for="udhar-amount-input">Amount (₹) *</label>
               <input type="number" id="udhar-amount-input" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
             </div>
           </div>
@@ -1558,7 +1541,7 @@
           </div>
           <div class="form-row-2" style="margin-top:12px;">
             <div class="form-field">
-              <label for="goal-target-input">Target Amount (Rs) *</label>
+              <label for="goal-target-input">Target Amount (₹) *</label>
               <input type="number" id="goal-target-input" class="form-input" placeholder="e.g. 50000" step="100" min="1" required>
             </div>
             <div class="form-field">
@@ -1586,7 +1569,7 @@
           <input type="hidden" id="contrib-goal-id" value="">
           <p id="contrib-goal-desc" class="modal-subtext" style="margin-bottom:12px;"></p>
           <div class="form-field">
-            <label for="contrib-amount-input">Contribution Amount (Rs) *</label>
+            <label for="contrib-amount-input">Contribution Amount (₹) *</label>
             <input type="number" id="contrib-amount-input" class="form-input" placeholder="e.g. 5000" step="10" min="1" required>
           </div>
           <div class="form-field" style="margin-top:12px;">
@@ -1617,7 +1600,7 @@
           </div>
           <div class="form-row-2" style="margin-top:12px;">
             <div class="form-field">
-              <label for="rec-edit-amount">Amount (Rs) *</label>
+              <label for="rec-edit-amount">Amount (₹) *</label>
               <input type="number" id="rec-edit-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
             </div>
             <div class="form-field">

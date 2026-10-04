@@ -1,5 +1,5 @@
 /* ================================================================
-   ABT — AI Budget Tracker  |  App Logic
+   SAARTH — Make money meaningful  |  App Logic
    Pure vanilla JS. No build step. No dependencies.
    ================================================================ */
 
@@ -241,8 +241,8 @@
 
   function toggleAuthMode() {
     isLoginMode = !isLoginMode;
-    authTitle.textContent = isLoginMode ? 'Welcome back' : 'Create account';
-    authSubtitle.textContent = isLoginMode ? 'Sign in to your account' : 'Get started with ABT';
+    authTitle.textContent = isLoginMode ? 'Welcome back' : 'Create your account';
+    authSubtitle.textContent = isLoginMode ? 'Sign in to your account' : 'Start your financial journey';
     authSubmitBtn.textContent = isLoginMode ? 'Sign in' : 'Create account';
     authSwitchText.textContent = isLoginMode ? "Don't have an account?" : 'Already have an account?';
     authSwitchBtn.textContent = isLoginMode ? 'Create account' : 'Sign in';
@@ -305,6 +305,8 @@
     sessionStorage.removeItem('abt_token');
     sessionStorage.removeItem('abt_user');
     sessionStorage.removeItem('abt_onboarding_skipped');
+    const mb = document.getElementById('maintenance-banner');
+    if (mb) mb.style.display = 'none';
     hideOnboarding();
     authScreen.style.display = '';
     appScreen.classList.remove('active');
@@ -369,6 +371,7 @@
     loadAllCategories();
     loadChatHistory();
     loadGlanceData();
+    checkMaintenanceStatus();
     switchView('chat');
   }
 
@@ -493,6 +496,15 @@
     }
     if (currentView === 'settings') {
       promises.push(loadSettings());
+    }
+    if (currentView === 'udhar') {
+      promises.push(loadUdhar());
+    }
+    if (currentView === 'calendar') {
+      promises.push(loadCalendar());
+    }
+    if (currentView === 'insights') {
+      promises.push(loadInsights());
     }
     loadGlanceData();
 
@@ -671,15 +683,21 @@
   messageList.addEventListener('scroll', () => {
     const threshold = 100;
     const isNear =
-      messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < threshold;
+      messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight <= threshold;
     userNearBottom = isNear;
-    jumpLatest.classList.toggle('visible', !isNear);
+    if (jumpLatest) {
+      jumpLatest.style.display = !isNear ? 'block' : 'none';
+      jumpLatest.classList.toggle('visible', !isNear);
+    }
   });
 
-  jumpLatest.addEventListener('click', () => {
-    scrollToBottom(true);
-    jumpLatest.classList.remove('visible');
-  });
+  if (jumpLatest) {
+    jumpLatest.addEventListener('click', () => {
+      scrollToBottom(true);
+      jumpLatest.style.display = 'none';
+      jumpLatest.classList.remove('visible');
+    });
+  }
 
   function scrollToBottom(force) {
     if (force || userNearBottom) {
@@ -715,25 +733,50 @@
         api('/api/goals').catch(() => null),
       ]);
 
-      if (snapshot) {
-        const safeSpend = snapshot.safe_to_spend_daily;
-        const savingsRate = snapshot.savings_rate_pct;
-        $('#glance-safe').textContent = safeSpend != null ? formatCurrency(safeSpend) : '--';
-        $('#glance-savings').textContent =
-          savingsRate != null ? savingsRate.toFixed(0) + '%' : '--';
+      const safeEl = $('#glance-safe');
+      const savingsEl = $('#glance-savings');
+      const streakEl = $('#glance-streak');
+      const goalEl = $('#glance-goal');
+
+      if (safeEl) {
+        if (snapshot && snapshot.safe_to_spend_daily != null) {
+          safeEl.textContent = formatCurrency(snapshot.safe_to_spend_daily);
+          safeEl.classList.remove('glance-empty-prompt');
+        } else {
+          safeEl.innerHTML = '<span class="glance-empty-prompt">Add income to calculate</span>';
+        }
       }
 
-      if (streak) {
-        const days = streak.current_streak || 0;
-        $('#glance-streak').textContent = days + ' day streak';
+      if (savingsEl) {
+        if (snapshot && snapshot.savings_rate_pct != null) {
+          savingsEl.textContent = snapshot.savings_rate_pct.toFixed(0) + '%';
+          savingsEl.classList.remove('glance-empty-prompt');
+        } else {
+          savingsEl.innerHTML = '<span class="glance-empty-prompt">Add income to calculate</span>';
+        }
       }
 
-      if (goals && goals.goals && goals.goals.length > 0) {
-        const top = goals.goals[0];
-        const pct = top.target_amount > 0
-          ? Math.round((top.saved_amount / top.target_amount) * 100)
-          : 0;
-        $('#glance-goal').textContent = pct + '%';
+      if (streakEl) {
+        const days = streak ? (streak.current_streak || 0) : 0;
+        if (days > 0) {
+          streakEl.textContent = days + (days === 1 ? ' day streak' : ' days streak');
+          streakEl.classList.remove('glance-empty-prompt');
+        } else {
+          streakEl.innerHTML = '<span class="glance-empty-prompt">Log today to start your streak</span>';
+        }
+      }
+
+      if (goalEl) {
+        if (goals && goals.goals && goals.goals.length > 0) {
+          const top = goals.goals[0];
+          const pct = top.target_amount > 0
+            ? Math.round((top.saved_amount / top.target_amount) * 100)
+            : 0;
+          goalEl.textContent = pct + '%';
+          goalEl.classList.remove('glance-empty-prompt');
+        } else {
+          goalEl.innerHTML = '<span class="glance-empty-prompt">Set a goal in Settings</span>';
+        }
       }
     } catch (err) {
       // Silent
@@ -1182,7 +1225,7 @@
             <rect x="2" y="4" width="20" height="16" rx="2"/>
             <line x1="6" y1="12" x2="18" y2="12"/>
           </svg>
-          <p>No transactions recorded this month. Message ABT in chat to log an expense.</p>
+          <p>No transactions recorded this month. Message SAARTH in chat to log an expense.</p>
         </div>
       `;
     }
@@ -1407,7 +1450,7 @@
               <div class="insight-callout-body">${escapeHtml(ins.text || '')}</div>
             </div>
             <button class="insight-action-btn" id="insight-action-btn" data-prompt="${escapeHtml(ins.prompt || '')}">
-              Ask ABT
+              Ask SAARTH
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="9 18 15 12 9 6"/>
               </svg>
@@ -1698,7 +1741,7 @@
       });
       html += '</div>';
     } else {
-      html += '<div class="empty-state"><p>No shared balances or debts yet. Ask ABT in chat about money you lent or borrowed, or tap "Split Expense".</p></div>';
+      html += '<div class="empty-state"><p>No shared balances or debts yet. Ask SAARTH in chat about money you lent or borrowed, or tap "Split Expense".</p></div>';
     }
 
     udharContent.innerHTML = html;
@@ -1815,6 +1858,8 @@
   ];
 
   function showOnboarding(startStep = 1) {
+    const mb = document.getElementById('maintenance-banner');
+    if (mb) mb.style.display = 'none';
     authScreen.style.display = 'none';
     appScreen.classList.remove('active');
     onboardingScreen.style.display = 'flex';
@@ -1927,7 +1972,7 @@
           </div>
           <div class="ob-cat-right">
             <div class="ob-cat-input-wrap">
-              <span>Rs</span>
+              <span>₹</span>
               <input type="number" class="ob-cat-input" data-key="${escapeHtml(cat.key)}" value="${st.amount}" min="0" step="100">
             </div>
           </div>
@@ -2100,7 +2145,7 @@
       });
 
       sessionStorage.removeItem('abt_onboarding_skipped');
-      showToast('Budgets saved successfully! Welcome to ABT.', 'success');
+      showToast('Budgets saved successfully! Welcome to SAARTH.', 'success');
       showApp();
     } catch (err) {
       showToast(err.message || 'Failed to save budgets', 'error');
@@ -2675,7 +2720,7 @@
         receipts.forEach((r) => {
           const isPdf = r.mime === 'application/pdf';
           const sizeKb = (r.size / 1024).toFixed(1);
-          const txDesc = r.merchant || r.category || (r.amount ? `Rs ${r.amount}` : 'General Receipt');
+          const txDesc = r.merchant || r.category || (r.amount ? `₹${r.amount}` : 'General Receipt');
           const txDate = r.transaction_date ? formatDate(r.transaction_date) : formatDate(r.created_at);
 
           html += `
@@ -2874,7 +2919,7 @@
 
     if (!modal) return;
 
-    const txDesc = rec.merchant || rec.category || (rec.amount ? `Rs ${rec.amount}` : 'General Receipt');
+    const txDesc = rec.merchant || rec.category || (rec.amount ? `₹${rec.amount}` : 'General Receipt');
     if (titleEl) titleEl.textContent = `Receipt: ${txDesc}`;
 
     if (openLink) openLink.href = rec.signed_url;
@@ -3503,14 +3548,19 @@
 
   // ---------- Maintenance Status ----------
   async function checkMaintenanceStatus() {
+    const mb = document.getElementById('maintenance-banner');
+    if (!mb) return;
+    const isOnboarding = onboardingScreen && onboardingScreen.style.display !== 'none';
+    const isAuth = authScreen && authScreen.style.display !== 'none';
+    if (!authToken || !currentUser || isAuth || isOnboarding) {
+      mb.style.display = 'none';
+      return;
+    }
     try {
       const data = await api('/api/app-status');
-      const mb = document.getElementById('maintenance-banner');
-      if (mb) {
-        mb.style.display = data.maintenance_mode ? 'block' : 'none';
-      }
+      mb.style.display = (data && data.maintenance_mode) ? 'block' : 'none';
     } catch (e) {
-      // Non-blocking
+      mb.style.display = 'none';
     }
   }
 
@@ -3864,7 +3914,7 @@
         <form class="quick-add-form" id="${formId}" onsubmit="return false;">
           <div class="quick-add-field quick-add-amount-wrap" data-tooltip="Enter the amount spent">
             <label for="${amtId}">Amount *</label>
-            <input type="number" id="${amtId}" class="form-input quick-add-input" placeholder="Rs 0.00" step="0.01" min="0.01" required data-tooltip="Enter the amount spent">
+            <input type="number" id="${amtId}" class="form-input quick-add-input" placeholder="₹0.00" step="0.01" min="0.01" required data-tooltip="Enter the amount spent">
           </div>
           <div class="quick-add-field" data-tooltip="Choose the spending category">
             <label for="${catId}">Category *</label>
@@ -3936,7 +3986,7 @@
           }),
         });
 
-        showToast(`Logged Rs ${amount.toFixed(2)} under ${category}`, 'success');
+        showToast(`Logged ₹${amount.toFixed(2)} under ${category}`, 'success');
         showUndoToast('Expense logged');
         if (amtInput) amtInput.value = '';
         if (noteInput) noteInput.value = '';
@@ -4428,7 +4478,7 @@
               tags,
             }),
           });
-          showToast(`Logged Rs ${amount.toFixed(2)} under ${category}`, 'success');
+          showToast(`Logged ₹${amount.toFixed(2)} under ${category}`, 'success');
           showUndoToast('Expense logged');
         }
 
@@ -4522,7 +4572,7 @@
           }),
         });
 
-        showToast(`Logged Rs ${amount.toFixed(2)} income (${source})`, 'success');
+        showToast(`Logged ₹${amount.toFixed(2)} income (${source})`, 'success');
         closeModal('#modal-income-entry', true);
 
         await refreshBudgetsAndDashboard();
@@ -4637,7 +4687,7 @@
             method: 'PATCH',
             body: JSON.stringify({ monthly_limit: val }),
           });
-          showToast(`Budget for ${cat} updated to Rs ${val}`, 'success');
+          showToast(`Budget for ${cat} updated to ₹${val}`, 'success');
           await refreshBudgetsAndDashboard();
         } catch (err) {
           showToast(err.message || 'Failed to update budget', 'error');
@@ -4751,7 +4801,7 @@
             rollover_enabled: rollover,
           }),
         });
-        showToast(`Budget for ${cat} set to Rs ${limitVal}`, 'success');
+        showToast(`Budget for ${cat} set to ₹${limitVal}`, 'success');
         closeModal('#modal-budget-add', true);
         await refreshBudgetsAndDashboard();
       } catch (err) {
@@ -4855,6 +4905,7 @@
             showToast('Goal deleted', 'success');
             loadSettings();
             loadGlanceData();
+            refreshBudgetsAndDashboard();
           }
         );
       });
@@ -4951,6 +5002,7 @@
         closeModal('#modal-goal-entry', true);
         loadSettings();
         loadGlanceData();
+        refreshBudgetsAndDashboard();
       } catch (err) {
         if (errEl) { errEl.textContent = err.message || 'Failed to save goal'; errEl.style.display = 'block'; }
       } finally {
@@ -5016,6 +5068,7 @@
         closeModal('#modal-goal-contribute', true);
         loadSettings();
         loadGlanceData();
+        refreshBudgetsAndDashboard();
       } catch (err) {
         if (errEl) { errEl.textContent = err.message || 'Contribution failed'; errEl.style.display = 'block'; }
       } finally {
@@ -5377,6 +5430,7 @@
         closeModal('#modal-udhar-entry', true);
         closeModal('#modal-udhar-ledger', true);
         loadUdhar();
+        refreshBudgetsAndDashboard();
       } catch (err) {
         if (errEl) { errEl.textContent = err.message || 'Failed to save udhar entry'; errEl.style.display = 'block'; }
       } finally {
@@ -5473,6 +5527,7 @@
             await api(`/api/udhar/${eid}/resolve`, { method: 'POST' });
             showToast('Due date marked as resolved', 'success');
             loadUdhar();
+            refreshBudgetsAndDashboard();
             closeModal('#modal-udhar-ledger', true);
           } catch (err) {
             showToast(err.message || 'Failed to resolve due date', 'error');
@@ -5511,6 +5566,7 @@
             showToast('Udhar entry deleted', 'success');
             closeModal('#modal-udhar-ledger', true);
             loadUdhar();
+            refreshBudgetsAndDashboard();
           });
         });
       });
@@ -5641,22 +5697,22 @@
     let targetPhrase = '';
 
     if (action === 'transactions') {
-      titleEl.textContent = 'Clear Transactions';
+      titleEl.textContent = 'Clear transactions?';
       descEl.textContent = 'Warning: This will delete transaction history. You can optionally pick a date range below.';
       if (rangePicker) rangePicker.style.display = 'block';
       targetPhrase = 'CLEAR TRANSACTIONS';
     } else if (action === 'udhar') {
-      titleEl.textContent = 'Clear Udhar Records';
-      descEl.textContent = 'Warning: This will permanently delete all udhar lent and borrowed entries and logs.';
+      titleEl.textContent = 'Clear udhar records?';
+      descEl.textContent = 'Warning: This will permanently delete all lending and borrowing entries and logs.';
       if (rangePicker) rangePicker.style.display = 'none';
       targetPhrase = 'CLEAR UDHAR';
     } else if (action === 'everything') {
-      titleEl.textContent = 'Clear Everything';
+      titleEl.textContent = 'Clear all data?';
       descEl.textContent = 'High-risk action: This permanently wipes all transactions, receipts, budgets, udhar, and chats.';
       if (rangePicker) rangePicker.style.display = 'none';
       targetPhrase = 'CLEAR EVERYTHING';
     } else if (action === 'account') {
-      titleEl.textContent = 'Delete Entire Account';
+      titleEl.textContent = 'Delete account?';
       descEl.textContent = 'Permanent deletion: Your account and all associated data will be completely deleted and you will be signed out.';
       if (rangePicker) rangePicker.style.display = 'none';
       targetPhrase = 'DELETE MY ACCOUNT';
@@ -5788,6 +5844,5 @@
 
   // ---------- Init ----------
 
-  checkMaintenanceStatus();
   tryRestore();
 })();

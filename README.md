@@ -1,6 +1,6 @@
-# AI Budget Tracker (ABT)
+# SAARTH — Make money meaningful
 
-A multi-user personal finance and budget management platform designed for cloud deployment. ABT combines conversational AI expense tracking (via Groq LLM and LangGraph ReAct agent) with a comprehensive manual management interface (quick-add bar, full transaction ledger, category budget manager, udhar tracking, savings goals, recurring bill schedules, and admin operations).
+A multi-user personal finance and budget management platform designed for cloud deployment. SAARTH combines conversational AI expense tracking (via Groq LLM and LangGraph ReAct agent) with a comprehensive manual management interface (quick-add bar, full transaction ledger, category budget manager, udhar tracking, savings goals, recurring bill schedules, and admin operations).
 
 ---
 
