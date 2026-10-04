@@ -107,12 +107,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ABT -- AI Budget Tracker", lifespan=lifespan)
 
-# Allow local dev
+
+from fastapi.middleware.cors import CORSMiddleware
+import os
+
+allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
