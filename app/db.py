@@ -275,6 +275,14 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_sent_notif_user ON sent_notifications(user_id, cycle);
 
+            CREATE TABLE IF NOT EXISTS engagement_notification_log (
+                id                SERIAL PRIMARY KEY,
+                user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                notification_type TEXT NOT NULL,
+                sent_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_engagement_notif_user ON engagement_notification_log(user_id, sent_at);
+
             -- Admin & Account Management
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
@@ -3762,6 +3770,7 @@ def clear_everything(user_id: int) -> dict:
 
         cur.execute("DELETE FROM push_subscriptions WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM sent_notifications WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM engagement_notification_log WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM undo_log WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM transaction_tags WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM merchant_aliases WHERE user_id = %s", (user_id,))
@@ -4394,6 +4403,124 @@ def check_and_record_notification(user_id: int, notification_type: str, cycle: s
         )
         row = cur.fetchone()
         return row is not None
+
+
+def get_users_for_engagement_notifications() -> list[dict]:
+    """Fetch users eligible for engagement notifications.
+    Returns list of dicts with:
+      user_id, username (or email if no username), email, created_at, last_login_at,
+      has_budgets (bool), has_transactions (bool), has_goals (bool),
+      transaction_count_this_month (int), push_subscriptions (list of endpoint/p256dh/auth dicts)
+    Only returns users who have at least one active push subscription.
+    """
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 
+                u.id AS user_id,
+                COALESCE(NULLIF(TRIM(u.username), ''), u.email) AS username,
+                u.email,
+                u.created_at,
+                u.last_login_at,
+                EXISTS(SELECT 1 FROM budgets b WHERE b.user_id = u.id) AS has_budgets,
+                EXISTS(SELECT 1 FROM transactions t WHERE t.user_id = u.id) AS has_transactions,
+                EXISTS(SELECT 1 FROM savings_goals sg WHERE sg.user_id = u.id) AS has_goals,
+                (SELECT COUNT(*) FROM transactions t2 WHERE t2.user_id = u.id AND TO_CHAR(t2.date, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')) AS transaction_count_this_month
+            FROM users u
+            WHERE EXISTS(SELECT 1 FROM push_subscriptions ps WHERE ps.user_id = u.id)
+              AND u.suspended_at IS NULL
+            ORDER BY u.id ASC
+            """
+        )
+        user_rows = cur.fetchall()
+        if not user_rows:
+            return []
+
+        user_ids = [r["user_id"] for r in user_rows]
+        cur.execute(
+            """
+            SELECT user_id, endpoint, p256dh, auth, preferences
+            FROM push_subscriptions
+            WHERE user_id = ANY(%s)
+            """,
+            (user_ids,),
+        )
+        sub_rows = cur.fetchall()
+
+    subs_by_user = {}
+    for sr in sub_rows:
+        subs_by_user.setdefault(sr["user_id"], []).append({
+            "endpoint": sr["endpoint"],
+            "p256dh": sr["p256dh"],
+            "auth": sr["auth"],
+            "preferences": sr.get("preferences") or {},
+        })
+
+    result = []
+    for ur in user_rows:
+        u_dict = dict(ur)
+        u_dict["push_subscriptions"] = subs_by_user.get(ur["user_id"], [])
+        result.append(u_dict)
+
+    return result
+
+
+def log_engagement_notification(user_id: int, notification_type: str) -> None:
+    """Record a sent engagement notification in engagement_notification_log."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO engagement_notification_log (user_id, notification_type, sent_at)
+            VALUES (%s, %s, NOW())
+            """,
+            (user_id, notification_type),
+        )
+
+
+def has_engagement_notification_today(user_id: int) -> bool:
+    """Check if the user has already received ANY engagement notification today."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM engagement_notification_log
+            WHERE user_id = %s AND sent_at >= CURRENT_DATE
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        return cur.fetchone() is not None
+
+
+def has_engagement_type_within_days(user_id: int, notification_type: str, days: int = 7) -> bool:
+    """Check if the user has received a specific engagement notification type within the last N days."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM engagement_notification_log
+            WHERE user_id = %s AND notification_type = %s
+              AND sent_at >= NOW() - (%s || ' days')::INTERVAL
+            LIMIT 1
+            """,
+            (user_id, notification_type, str(days)),
+        )
+        return cur.fetchone() is not None
+
+
+def has_budget_alert_today(user_id: int) -> bool:
+    """Check if an over-budget alert or existing budget alert was already sent today."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM sent_notifications
+            WHERE user_id = %s
+              AND (notification_type LIKE 'budget%%' OR notification_type = 'over_budget_alert')
+              AND (cycle = TO_CHAR(NOW(), 'YYYY-MM-DD') OR sent_at >= CURRENT_DATE)
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        return cur.fetchone() is not None
+
 
 
 # ---------- User Password & Account Management ----------

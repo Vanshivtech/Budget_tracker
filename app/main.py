@@ -6,9 +6,11 @@ Run from the project root:
     uvicorn app.main:app --reload
 """
 import asyncio
+import calendar
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,7 +33,7 @@ from app.db import (
     add_recurring_expense, get_recurring_expenses, deactivate_recurring_expense,
     check_and_process_recurring_reminders, get_effective_budgets, set_category_rollover,
     compute_health_score, split_expense, generate_monthly_excel, generate_monthly_pdf,
-    current_month,
+    current_month, spend_by_category,
     # New functions
     set_username, set_avatar, get_user_display, set_user_avatar_url, get_dashboard_tier2,
     add_user_category, remove_user_category, get_all_categories, get_user_categories,
@@ -46,6 +48,9 @@ from app.db import (
     save_push_subscription, get_user_push_subscriptions, remove_push_subscription,
     check_and_record_notification, normalize_merchant, check_duplicate_expense,
     log_transaction,
+    # Engagement Notification System
+    get_users_for_engagement_notifications, log_engagement_notification,
+    has_engagement_notification_today, has_engagement_type_within_days, has_budget_alert_today,
     # Password Change, Admin, and Live Settings
     update_user_password, update_user_last_login, set_user_suspended, set_user_force_password_reset,
     log_server_error, get_recent_server_errors, get_app_settings, set_app_setting, get_app_setting,
@@ -72,7 +77,7 @@ from app.importer import (
     parse_csv_content, parse_plain_text_statements, categorize_by_rule,
     batch_llm_categorize, MAX_FILE_BYTES, MAX_ROWS,
 )
-from app.push import send_web_push
+from app.push import send_web_push, send_engagement_notification
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("budget-tracker")
@@ -91,6 +96,17 @@ async def _daily_recurring_scheduler():
         await asyncio.sleep(12 * 3600)
 
 
+async def _engagement_notification_scheduler():
+    """Run engagement notifications once every 24 hours, offset by 4 hours from startup."""
+    await asyncio.sleep(4 * 3600)
+    while True:
+        try:
+            run_engagement_notifications()
+        except Exception:
+            logger.exception("Error in engagement notification scheduler")
+        await asyncio.sleep(24 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.validate()
@@ -100,12 +116,14 @@ async def lifespan(app: FastAPI):
         check_and_process_recurring_reminders()
     except Exception:
         logger.exception("Initial recurring bills check failed")
-    task = asyncio.create_task(_daily_recurring_scheduler())
+    task_recurring = asyncio.create_task(_daily_recurring_scheduler())
+    task_engagement = asyncio.create_task(_engagement_notification_scheduler())
     yield
-    task.cancel()
+    task_recurring.cancel()
+    task_engagement.cancel()
 
 
-app = FastAPI(title="ABT -- AI Budget Tracker", lifespan=lifespan)
+app = FastAPI(title="SAARTH -- Make money meaningful", lifespan=lifespan)
 
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -1751,8 +1769,8 @@ def push_test_trigger(user: dict = Depends(get_current_user)):
         }
         success, code, err = send_web_push(
             subscription_info=sub_info,
-            title="Budget Tracker Alert",
-            body="Test notification received successfully. Your budget alerts are active.",
+            title="SAARTH Alert",
+            body="Test notification received successfully. Your SAARTH alerts are active.",
             url="/",
             tag="test-alert",
         )
@@ -1761,9 +1779,199 @@ def push_test_trigger(user: dict = Depends(get_current_user)):
         else:
             failed += 1
             if code in (404, 410):
+                print(f"[PUSH] Pruning expired/invalid subscription {s['endpoint']} (HTTP {code})")
                 remove_push_subscription(s["endpoint"])
 
     return {"status": "ok", "sent": sent, "failed": failed}
+
+
+def run_engagement_notifications() -> dict:
+    """Evaluate and dispatch engagement notifications to all eligible users.
+    Returns: {"processed": processed_count, "sent": sent_count, "skipped": skipped_count}
+    """
+    eligible_users = get_users_for_engagement_notifications()
+    now = datetime.now(timezone.utc)
+    month = current_month()
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    days_elapsed = now.day
+    day_of_year = now.timetuple().tm_yday
+    week_of_year = now.isocalendar()[1]
+
+    processed = 0
+    sent = 0
+    skipped = 0
+
+    for user in eligible_users:
+        processed += 1
+        user_id = user["user_id"]
+        push_subs = user.get("push_subscriptions", [])
+        if not push_subs:
+            skipped += 1
+            continue
+
+        # Skip check 1: Active in the last 2 hours
+        last_login = user.get("last_login_at")
+        if last_login is not None:
+            if last_login.tzinfo is None:
+                last_login = last_login.replace(tzinfo=timezone.utc)
+            if 0 <= (now - last_login).total_seconds() < 2 * 3600:
+                logger.info(f"[ENGAGEMENT] Skipping user {user_id}: active within last 2 hours")
+                skipped += 1
+                continue
+
+        # Skip check 2: Already received any engagement notification today
+        if has_engagement_notification_today(user_id):
+            logger.info(f"[ENGAGEMENT] Skipping user {user_id}: already received engagement notification today")
+            skipped += 1
+            continue
+
+        notification_to_send = None
+
+        # --- Rule 1: no_budget_set ---
+        created_at = user.get("created_at")
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        created_over_1_day = bool(created_at and (now - created_at).total_seconds() > 86400)
+
+        if not user.get("has_budgets") and created_over_1_day:
+            notification_to_send = {
+                "type": "no_budget_set",
+                "title": "SAARTH is ready for you",
+                "body": "You haven't set your budgets yet. It takes 2 minutes and helps SAARTH guide you better. Set them now.",
+                "url": "/settings",
+            }
+
+        # --- Rule 2: no_transactions_this_month ---
+        if not notification_to_send:
+            if user.get("transaction_count_this_month", 0) == 0 and user.get("has_budgets") and now.day >= 3:
+                notification_to_send = {
+                    "type": "no_transactions_this_month",
+                    "title": "How's the month going?",
+                    "body": "You haven't logged any spends this month yet. Tell SAARTH what you've spent and it'll tell you where you stand.",
+                    "url": "/dashboard",
+                }
+
+        # --- Rule 3: re_engagement (inactive user) ---
+        if not notification_to_send:
+            ref_date = last_login if last_login is not None else created_at
+            if ref_date and (now - ref_date).total_seconds() > 3 * 86400:
+                bodies = [
+                    "SAARTH has been keeping your data safe. Come back and see where your money stands this month.",
+                    "Your budgets are waiting. A quick check-in with SAARTH takes less than a minute.",
+                    "Did you know SAARTH can tell you exactly how much you can safely spend today? Open the app to find out.",
+                    "Your financial goals aren't going to track themselves. SAARTH missed you.",
+                    "Small check-ins lead to big savings. SAARTH is ready when you are.",
+                ]
+                notification_to_send = {
+                    "type": "re_engagement",
+                    "title": "It's been a while",
+                    "body": bodies[day_of_year % 5],
+                    "url": "/",
+                }
+
+        # --- Rule 4: goal_behind_pace ---
+        if not notification_to_send and user.get("has_goals"):
+            goals = get_goals(user_id)
+            expected_fraction = (days_elapsed / days_in_month) - 0.1
+            for g in goals:
+                tgt = float(g.get("target_amount") or 0.0)
+                saved = float(g.get("saved_amount") or 0.0)
+                if tgt > 0:
+                    if (saved / tgt) < expected_fraction:
+                        notification_to_send = {
+                            "type": "goal_behind_pace",
+                            "title": "Your goal needs attention",
+                            "body": "You're behind pace on one of your savings goals. SAARTH can show you how to catch up.",
+                            "url": "/goals",
+                        }
+                        break
+
+        # --- Rule 5: over_budget_alert ---
+        if not notification_to_send and user.get("has_budgets"):
+            effective_budgets = get_effective_budgets(user_id, month)
+            spends = spend_by_category(user_id, month)
+            is_over_90 = False
+            for cat, binfo in effective_budgets.items():
+                limit = float(binfo.get("effective_budget") or binfo.get("base_limit") or 0.0)
+                if limit > 0 and spends.get(cat, 0.0) > limit * 0.9:
+                    is_over_90 = True
+                    break
+            if is_over_90 and not has_budget_alert_today(user_id):
+                notification_to_send = {
+                    "type": "over_budget_alert",
+                    "title": "Heads up on your spending",
+                    "body": "You're close to or over budget in one of your categories. Open SAARTH to see where and adjust.",
+                    "url": "/dashboard",
+                }
+
+        # --- Rule 6: positive_reinforcement ---
+        if not notification_to_send:
+            last_login_within_24h = last_login is not None and (now - last_login).total_seconds() <= 86400
+            tx_count = user.get("transaction_count_this_month", 0)
+            if last_login_within_24h and tx_count >= 5 and user.get("has_budgets"):
+                effective_budgets = get_effective_budgets(user_id, month)
+                spends = spend_by_category(user_id, month)
+                all_within = True
+                for cat, binfo in effective_budgets.items():
+                    limit = float(binfo.get("effective_budget") or binfo.get("base_limit") or 0.0)
+                    if limit > 0 and spends.get(cat, 0.0) > limit:
+                        all_within = False
+                        break
+                if all_within and not has_engagement_type_within_days(user_id, "positive_reinforcement", 7):
+                    bodies_pos = [
+                        "You're on track this month. Keep it up and SAARTH will help you finish strong.",
+                        "Great consistency! Logging your spends regularly is the single best financial habit you can build.",
+                        "All your categories are within budget. SAARTH is proud of you.",
+                    ]
+                    notification_to_send = {
+                        "type": "positive_reinforcement",
+                        "title": "You're doing great",
+                        "body": bodies_pos[week_of_year % 3],
+                        "url": "/insights",
+                    }
+
+        if not notification_to_send:
+            skipped += 1
+            continue
+
+        # Send notification to all registered subscriptions for this user
+        user_sent = False
+        for s in push_subs:
+            sub_info = {
+                "endpoint": s["endpoint"],
+                "keys": {
+                    "p256dh": s["p256dh"],
+                    "auth": s["auth"],
+                },
+            }
+            success, code, err = send_engagement_notification(
+                subscription_info=sub_info,
+                title=notification_to_send["title"],
+                body=notification_to_send["body"],
+                url=notification_to_send["url"],
+            )
+            if success:
+                user_sent = True
+            else:
+                if code in (404, 410):
+                    print(f"[PUSH] Pruning expired/invalid subscription {s['endpoint']} (HTTP {code})")
+                    remove_push_subscription(s["endpoint"])
+
+        if user_sent:
+            log_engagement_notification(user_id, notification_to_send["type"])
+            print(f"[ENGAGEMENT] Sent {notification_to_send['type']} notification to user {user_id}")
+            sent += 1
+        else:
+            skipped += 1
+
+    return {"processed": processed, "sent": sent, "skipped": skipped}
+
+
+@app.post("/api/push/trigger-engagement")
+def push_trigger_engagement(admin: dict = Depends(get_current_admin)):
+    """Manually trigger the engagement notification process for all eligible users (Admin only)."""
+    return run_engagement_notifications()
+
 
 
 # ---------- App Status (Public) ----------
@@ -1961,6 +2169,10 @@ def serve_manifest():
 
 
 @app.get("/")
+@app.get("/settings")
+@app.get("/dashboard")
+@app.get("/goals")
+@app.get("/insights")
 def serve_frontend():
     """Serve the single-page frontend."""
     return FileResponse(str(FRONTEND_DIR / "index.html"))
