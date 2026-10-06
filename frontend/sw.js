@@ -1,5 +1,5 @@
 /* SAARTH Service Worker — app-shell caching */
-const CACHE_NAME = 'saarth-v10';
+const CACHE_NAME = 'saarth-v11';
 const SHELL_ASSETS = [
   '/',
   '/static/styles.css',
@@ -108,3 +108,21 @@ self.addEventListener('notificationclick', (e) => {
     })
   );
 });
+
+self.addEventListener('pushsubscriptionchange', (e) => {
+  e.waitUntil(
+    self.registration.pushManager.subscribe(e.oldSubscription?.options || { userVisibleOnly: true })
+      .then((newSub) => {
+        // Broadcast new subscription to active windows if open
+        return clients.matchAll({ type: 'window' }).then((clientList) => {
+          clientList.forEach((client) => {
+            client.postMessage({ type: 'PUSH_SUBSCRIPTION_CHANGED', endpoint: newSub.endpoint });
+          });
+        });
+      })
+      .catch((err) => {
+        console.warn('[SW] pushsubscriptionchange failed:', err);
+      })
+  );
+});
+

@@ -45,7 +45,7 @@ from app.db import (
     add_receipt, get_receipts, get_receipt_by_id, delete_receipt, get_transaction_receipts,
     get_cached_merchant_category, set_cached_merchant_category, get_past_merchant_category,
     get_udhar_reminder_data, get_cashflow_calendar, get_overspending_projections,
-    save_push_subscription, get_user_push_subscriptions, remove_push_subscription,
+    save_push_subscription, get_user_push_subscriptions, remove_push_subscription, clear_all_push_subscriptions,
     check_and_record_notification, normalize_merchant, check_duplicate_expense,
     log_transaction,
     # Engagement Notification System
@@ -112,6 +112,13 @@ async def lifespan(app: FastAPI):
     settings.validate()
     init_db()
     logger.info("Database initialized with Supabase Postgres.")
+
+    # One-time cleanup of stale push subscriptions after VAPID key change
+    if get_app_setting("push_subscriptions_cleared_after_vapid_change") != "true":
+        count = clear_all_push_subscriptions()
+        print(f"[STARTUP] Cleared {count} stale push subscriptions after VAPID key change")
+        set_app_setting("push_subscriptions_cleared_after_vapid_change", "true")
+
     try:
         check_and_process_recurring_reminders()
     except Exception:
@@ -1718,8 +1725,10 @@ def projections_view(user: dict = Depends(get_current_user)):
 
 @app.get("/api/push/vapid-key")
 def push_vapid_key():
-    """Return the public VAPID key for web push subscription."""
-    return {"public_key": settings.VAPID_PUBLIC_KEY}
+    """Return the public VAPID key and key_hash for web push subscription."""
+    pub = settings.VAPID_PUBLIC_KEY
+    key_hash = pub[:8] if pub else ""
+    return {"public_key": pub, "key_hash": key_hash}
 
 
 @app.post("/api/push/subscribe")

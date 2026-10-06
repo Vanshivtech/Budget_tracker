@@ -3670,6 +3670,51 @@
   }
 
   // Web Push Subscription Handlers
+  async function performPushSubscribe(reg, vapidData) {
+    // 1. Check if existing subscription found; always unsubscribe first
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      console.log('[PUSH] Existing subscription found, unsubscribing first to refresh key...');
+      try {
+        await existing.unsubscribe();
+      } catch (unsubErr) {
+        console.warn('[PUSH] Unsubscribe error:', unsubErr);
+      }
+    }
+
+    // 2. Subscribe with current VAPID key
+    const convertedKey = urlBase64ToUint8Array(vapidData.public_key);
+    const newSub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: convertedKey,
+    });
+
+    // 3. Extract keys
+    const p256dh = btoa(String.fromCharCode.apply(null, new Uint8Array(newSub.getKey('p256dh'))));
+    const auth = btoa(String.fromCharCode.apply(null, new Uint8Array(newSub.getKey('auth'))));
+
+    // 4. Send the new subscription to backend
+    await api('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: newSub.endpoint,
+        keys: { p256dh, auth },
+        preferences: {
+          budget_alerts: $('#pref-budget-alerts')?.checked ?? true,
+          bill_reminders: $('#pref-bill-reminders')?.checked ?? true,
+          weekly_recap: $('#pref-weekly-recap')?.checked ?? true,
+        },
+      }),
+    });
+
+    // 5. Store key_hash in localStorage
+    if (vapidData.key_hash) {
+      localStorage.setItem('saarth_vapid_hash', vapidData.key_hash);
+    }
+
+    return newSub;
+  }
+
   async function checkAndUpdatePushState() {
     const toggleBtn = $('#btn-toggle-push');
     if (!toggleBtn) return;
@@ -3688,7 +3733,25 @@
 
     try {
       const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.getSubscription();
+      let sub = await reg.pushManager.getSubscription();
+
+      // Check if VAPID key has changed while subscription exists
+      if (sub) {
+        try {
+          const vapidData = await api('/api/push/vapid-key');
+          const storedHash = localStorage.getItem('saarth_vapid_hash');
+          if (vapidData && vapidData.key_hash) {
+            if (storedHash && storedHash !== vapidData.key_hash) {
+              console.log('[PUSH] VAPID key changed (stored:', storedHash, '!= current:', vapidData.key_hash, '). Auto-resubscribing...');
+              sub = await performPushSubscribe(reg, vapidData);
+            } else if (!storedHash) {
+              localStorage.setItem('saarth_vapid_hash', vapidData.key_hash);
+            }
+          }
+        } catch (syncErr) {
+          console.warn('[PUSH] Key version check error:', syncErr);
+        }
+      }
 
       if (sub) {
         toggleBtn.textContent = 'Disable Push Notifications';
@@ -3713,13 +3776,21 @@
         const sub = await reg.pushManager.getSubscription();
 
         if (sub) {
-          await sub.unsubscribe();
+          // Toggle OFF flow:
+          // Unsubscribe on browser side AND call POST /api/push/unsubscribe on backend
+          const ep = sub.endpoint;
+          try {
+            await sub.unsubscribe();
+          } catch (unsubErr) {
+            console.warn('[PUSH] Unsubscribe error:', unsubErr);
+          }
           await api('/api/push/unsubscribe', {
             method: 'POST',
-            body: JSON.stringify({ endpoint: sub.endpoint }),
-          });
+            body: JSON.stringify({ endpoint: ep }),
+          }).catch(() => null);
           showToast('Web Push notifications disabled', 'info');
         } else {
+          // Toggle ON flow:
           const perm = await Notification.requestPermission();
           if (perm !== 'granted') {
             showToast('Notification permission was not granted', 'error');
@@ -3728,29 +3799,7 @@
           }
 
           const vapidData = await api('/api/push/vapid-key');
-          const convertedKey = urlBase64ToUint8Array(vapidData.public_key);
-
-          const newSub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: convertedKey,
-          });
-
-          const p256dh = btoa(String.fromCharCode.apply(null, new Uint8Array(newSub.getKey('p256dh'))));
-          const auth = btoa(String.fromCharCode.apply(null, new Uint8Array(newSub.getKey('auth'))));
-
-          await api('/api/push/subscribe', {
-            method: 'POST',
-            body: JSON.stringify({
-              endpoint: newSub.endpoint,
-              keys: { p256dh, auth },
-              preferences: {
-                budget_alerts: $('#pref-budget-alerts')?.checked ?? true,
-                bill_reminders: $('#pref-bill-reminders')?.checked ?? true,
-                weekly_recap: $('#pref-weekly-recap')?.checked ?? true,
-              },
-            }),
-          });
-
+          await performPushSubscribe(reg, vapidData);
           showToast('Web Push notifications activated!', 'success');
         }
       } catch (err) {

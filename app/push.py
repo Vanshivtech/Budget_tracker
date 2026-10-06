@@ -66,6 +66,13 @@ def send_web_push(
             status_code = ex.response.status_code
         logger.warning(f"[PUSH] WebPushException sending to {endpoint}: {ex} (HTTP {status_code})")
         print(f"[PUSH] Failed to send to {endpoint}: {ex} (HTTP {status_code})")
+        if status_code in (404, 410):
+            try:
+                from app.db import remove_push_subscription
+                remove_push_subscription(endpoint)
+                print(f"[PUSH] Immediately deleted expired/unsubscribed endpoint {endpoint} (HTTP {status_code})")
+            except Exception as rem_err:
+                logger.error(f"[PUSH] Failed to delete expired subscription {endpoint}: {rem_err}")
         return False, status_code, str(ex)
     except Exception as ex:
         logger.error(f"[PUSH] Unexpected error sending push notification to {endpoint}: {ex}")

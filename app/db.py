@@ -4331,7 +4331,10 @@ def save_push_subscription(
     auth: str,
     preferences: Optional[dict] = None,
 ) -> dict:
-    """Save or update browser push subscription."""
+    """Save or update browser push subscription.
+    Ensures one active subscription per user per browser by deleting old
+    subscriptions with a different endpoint for this user.
+    """
     import json
     prefs_json = json.dumps(preferences or {
         "budget_alerts": True,
@@ -4339,6 +4342,11 @@ def save_push_subscription(
         "weekly_recap": True,
     })
     with get_db_cursor() as cur:
+        # Delete any existing subscription for this user with a different endpoint
+        cur.execute(
+            "DELETE FROM push_subscriptions WHERE user_id = %s AND endpoint != %s",
+            (user_id, endpoint),
+        )
         cur.execute(
             """
             INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, preferences)
@@ -4385,6 +4393,14 @@ def remove_push_subscription(endpoint: str) -> bool:
     with get_db_cursor() as cur:
         cur.execute("DELETE FROM push_subscriptions WHERE endpoint = %s", (endpoint,))
         return cur.rowcount > 0
+
+
+def clear_all_push_subscriptions() -> int:
+    """Clear all push subscriptions from the database (e.g. after VAPID key change)."""
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM push_subscriptions")
+        return cur.rowcount
+
 
 
 def check_and_record_notification(user_id: int, notification_type: str, cycle: str) -> bool:
