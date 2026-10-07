@@ -14,11 +14,12 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from typing import Any
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.config import settings
 from app.db import (
@@ -29,6 +30,7 @@ from app.db import (
     get_financial_snapshot, get_insights, get_weekly_recap,
     get_logging_streak, add_income_entry, get_income_summary,
     get_user_profile, update_user_profile,
+    VALID_LIVING_SITUATIONS, sanitize_living_situation,
     suggest_budget_defaults, has_completed_onboarding, complete_onboarding,
     add_recurring_expense, get_recurring_expenses, deactivate_recurring_expense,
     check_and_process_recurring_reminders, get_effective_budgets, set_category_rollover,
@@ -262,6 +264,15 @@ class ProfileUpdateRequest(BaseModel):
     risk_comfort: str | None = None
     living_situation: str | None = None
 
+    @field_validator("living_situation", mode="before")
+    @classmethod
+    def sanitize_living_situation_field(cls, v: Any) -> str | None:
+        if v is not None and isinstance(v, str):
+            sanitized = sanitize_living_situation(v)
+            if sanitized:
+                return sanitized
+        return v
+
 
 class OnboardingCategoryItem(BaseModel):
     name: str
@@ -273,6 +284,15 @@ class OnboardingCompleteRequest(BaseModel):
     living_situation: str
     monthly_income: float | None = None
     categories: list[OnboardingCategoryItem]
+
+    @field_validator("living_situation", mode="before")
+    @classmethod
+    def sanitize_living_situation_field(cls, v: Any) -> str:
+        if isinstance(v, str):
+            sanitized = sanitize_living_situation(v)
+            if sanitized:
+                return sanitized
+        return str(v) if v is not None else ""
 
 
 class RecurringAddRequest(BaseModel):
@@ -789,13 +809,19 @@ def profile_update(req: ProfileUpdateRequest, user: dict = Depends(get_current_u
     """Update current_savings, risk_comfort, and/or living_situation."""
     if req.risk_comfort and req.risk_comfort not in ("low", "medium", "high"):
         raise HTTPException(status_code=400, detail="risk_comfort must be low/medium/high")
-    if req.living_situation and req.living_situation not in ("family", "alone", "pg", "roommates"):
-        raise HTTPException(status_code=400, detail="living_situation must be family/alone/pg/roommates")
+    sit = None
+    if req.living_situation:
+        sit = sanitize_living_situation(req.living_situation)
+        if not sit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"living_situation must be one of: {', '.join(VALID_LIVING_SITUATIONS)}",
+            )
     return update_user_profile(
         user_id=user["id"],
         current_savings=req.current_savings,
         risk_comfort=req.risk_comfort,
-        living_situation=req.living_situation,
+        living_situation=sit,
     )
 
 
@@ -1138,14 +1164,12 @@ def onboarding_defaults(
     living_situation: str = "alone",
 ):
     """Deterministic budget suggestions. No auth needed, no LLM call."""
-    valid_situations = ("family", "alone", "pg", "roommates")
-    if living_situation not in valid_situations:
-        living_situation = "alone"
+    sit = sanitize_living_situation(living_situation) or "alone"
     defaults = suggest_budget_defaults(
         monthly_income=income,
-        living_situation=living_situation,
+        living_situation=sit,
     )
-    return {"defaults": defaults, "income": income, "living_situation": living_situation}
+    return {"defaults": defaults, "income": income, "living_situation": sit}
 
 
 @app.post("/api/onboarding/complete")
@@ -1154,10 +1178,12 @@ def onboarding_complete(
     user: dict = Depends(get_current_user),
 ):
     """Save onboarding budgets. Pure DB writes, zero LLM tokens."""
-    valid_situations = ("family", "alone", "pg", "roommates")
-    sit = req.living_situation.lower().strip()
-    if sit not in valid_situations:
-        raise HTTPException(status_code=400, detail="Invalid living_situation")
+    sit = sanitize_living_situation(req.living_situation)
+    if not sit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid living_situation. Must be one of: {', '.join(VALID_LIVING_SITUATIONS)}",
+        )
     result = complete_onboarding(
         user_id=user["id"],
         living_situation=sit,

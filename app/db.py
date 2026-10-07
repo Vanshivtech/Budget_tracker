@@ -19,6 +19,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 import calendar
 import io
+import re
 import time
 from contextlib import contextmanager
 
@@ -1501,8 +1502,9 @@ def update_user_profile(
                 updates.append("risk_comfort = %s")
                 params.append(risk_comfort)
             if living_situation is not None:
+                sit = sanitize_living_situation(living_situation) or living_situation
                 updates.append("living_situation = %s")
-                params.append(living_situation)
+                params.append(sit)
             updates.append("updated_at = NOW()")
             params.append(user_id)
             cur.execute(
@@ -1510,12 +1512,13 @@ def update_user_profile(
                 tuple(params),
             )
         else:
+            sit = sanitize_living_situation(living_situation) or living_situation if living_situation is not None else None
             cur.execute(
                 """
                 INSERT INTO user_profile (user_id, current_savings, risk_comfort, living_situation)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (user_id, current_savings, risk_comfort, living_situation),
+                (user_id, current_savings, risk_comfort, sit),
             )
     return get_user_profile(user_id)
 
@@ -1856,11 +1859,80 @@ _PCT_WITH_RENT: dict[str, float] = {
     "miscellaneous": 0.05,
 }
 
+VALID_LIVING_SITUATIONS: tuple[str, ...] = (
+    "with_family",
+    "alone",
+    "with_roommates",
+    "with_partner",
+)
+
+LIVING_SITUATION_MAP: dict[str, str] = {
+    # 1. with_family
+    "with_family": "with_family",
+    "with family": "with_family",
+    "living with family": "with_family",
+    "family": "with_family",
+    # 2. alone
+    "alone": "alone",
+    "living alone": "alone",
+    "living alone / renting": "alone",
+    "living alone/renting": "alone",
+    "renting": "alone",
+    # 3. with_roommates
+    "with_roommates": "with_roommates",
+    "with roommates": "with_roommates",
+    "living with roommates": "with_roommates",
+    "roommates": "with_roommates",
+    "roommate": "with_roommates",
+    "with roommate": "with_roommates",
+    "with_roommate": "with_roommates",
+    "pg": "with_roommates",
+    "pg or hostel": "with_roommates",
+    "pg/hostel": "with_roommates",
+    "hostel": "with_roommates",
+    # 4. with_partner
+    "with_partner": "with_partner",
+    "with partner": "with_partner",
+    "living with partner": "with_partner",
+    "partner": "with_partner",
+    "with spouse": "with_partner",
+    "spouse": "with_partner",
+    "with_spouse": "with_partner",
+}
+
+
+def sanitize_living_situation(val: str | None) -> str | None:
+    """Normalize and validate living situation to one of canonical enum values:
+    'with_family', 'alone', 'with_roommates', 'with_partner'.
+    Accepts human-readable strings like 'With family', 'Living alone', etc.
+    Returns the canonical snake_case string or None if invalid.
+    """
+    if not val or not isinstance(val, str):
+        return None
+    cleaned = val.strip().lower()
+    if not cleaned:
+        return None
+    if cleaned in LIVING_SITUATION_MAP:
+        return LIVING_SITUATION_MAP[cleaned]
+    # Normalize punctuation and spaces
+    norm_spaces = re.sub(r"[\s_\-]+", " ", cleaned).strip()
+    if norm_spaces in LIVING_SITUATION_MAP:
+        return LIVING_SITUATION_MAP[norm_spaces]
+    norm_under = re.sub(r"[\s\-]+", "_", cleaned).strip()
+    if norm_under in LIVING_SITUATION_MAP:
+        return LIVING_SITUATION_MAP[norm_under]
+    return None
+
+
 _LIVING_RENT_MULT: dict[str, float] = {
-    "family": 0.0,      # no rent
-    "alone": 1.0,        # full rent (~30%)
-    "pg": 0.50,          # PG/hostel (~15%)
-    "roommates": 0.55,   # shared (~16.5%)
+    "family": 0.0,
+    "with_family": 0.0,       # no rent
+    "alone": 1.0,             # full rent (~30%)
+    "pg": 0.50,               # PG/hostel (~15%)
+    "roommates": 0.55,        # shared (~16.5%)
+    "with_roommates": 0.55,   # shared (~16.5%)
+    "with_partner": 0.50,     # shared with partner (~15%)
+    "partner": 0.50,
 }
 
 
@@ -1872,12 +1944,13 @@ def suggest_budget_defaults(
 
     Args:
         monthly_income: user's monthly income, or None if skipped.
-        living_situation: one of 'family', 'alone', 'pg', 'roommates'.
+        living_situation: one of 'with_family', 'alone', 'with_roommates', 'with_partner'
+                         (also accepts human-readable strings like 'With family').
 
     Returns:
         dict mapping category name -> suggested monthly amount (rounded).
     """
-    sit = living_situation.lower().strip() if living_situation else "alone"
+    sit = sanitize_living_situation(living_situation) or "alone"
     rent_mult = _LIVING_RENT_MULT.get(sit, 1.0)
 
     if monthly_income and monthly_income > 0:
@@ -1900,9 +1973,11 @@ def suggest_budget_defaults(
         result = dict(_FLAT_DEFAULTS)
         if rent_mult == 0.0:
             result["rent"] = 0
-        elif sit == "pg":
+        elif sit in ("pg", "hostel"):
             result["rent"] = 5000
-        elif sit == "roommates":
+        elif sit in ("roommates", "with_roommates"):
+            result["rent"] = 6000
+        elif sit in ("partner", "with_partner"):
             result["rent"] = 6000
         return result
 
@@ -1964,6 +2039,7 @@ def complete_onboarding(
             END $$;
         """)
 
+        sit = sanitize_living_situation(living_situation) or (living_situation.lower().strip() if living_situation else "alone")
         cur.execute(
             """
             INSERT INTO user_profile (user_id, living_situation, updated_at)
@@ -1972,7 +2048,7 @@ def complete_onboarding(
             SET living_situation = EXCLUDED.living_situation,
                 updated_at = NOW()
             """,
-            (user_id, living_situation),
+            (user_id, sit),
         )
 
     # Store monthly income as an income entry if provided

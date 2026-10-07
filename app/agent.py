@@ -395,12 +395,15 @@ def update_profile(
     config: RunnableConfig = None,
 ) -> str:
     """Update the user's financial profile. current_savings is total savings in Rs.
-    risk_comfort is 'low', 'medium', or 'high'. living_situation is 'family', 'alone', 'pg', or 'roommates'. Provide only fields to update."""
+    risk_comfort is 'low', 'medium', or 'high'. living_situation is 'with_family', 'alone', 'with_roommates', or 'with_partner'. Provide only fields to update."""
     user_id = _get_user_id(config)
     if risk_comfort and risk_comfort not in ("low", "medium", "high"):
         return "risk_comfort must be 'low', 'medium', or 'high'."
-    if living_situation and living_situation not in ("family", "alone", "pg", "roommates"):
-        return "living_situation must be 'family', 'alone', 'pg', or 'roommates'."
+    if living_situation:
+        sit = db.sanitize_living_situation(living_situation)
+        if not sit:
+            return f"living_situation must be one of: {', '.join(db.VALID_LIVING_SITUATIONS)}."
+        living_situation = sit
     profile = db.update_user_profile(
         user_id=user_id,
         current_savings=current_savings,
