@@ -52,13 +52,8 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-    # --- Email / SMTP ---
-    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
-    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
-    SMTP_USER: str = os.getenv("SMTP_USER", "")
-    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
-    SMTP_FROM: str = os.getenv("SMTP_FROM", "SAARTH <no-reply@saarth.app>")
-    SMTP_TLS: bool = os.getenv("SMTP_TLS", "true").lower() in ("true", "1", "yes")
+    # --- Email (Resend HTTP API) ---
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 
     # --- Admin Authentication (Separate from user auth) ---
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "")

@@ -1,13 +1,12 @@
 """
 Email verification and notification service for SAARTH.
-Handles disposable domain checks, OTP generation, and email sending via SMTP.
+Handles disposable domain checks, OTP generation, and email delivery via Resend HTTP API.
 """
 import logging
+import os
 import re
 import secrets
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import resend
 
 from app.config import settings
 
@@ -87,149 +86,44 @@ def generate_otp() -> str:
     return f"{secrets.randbelow(1000000):06d}"
 
 
-def build_otp_html(otp: str) -> str:
-    """Build clean HTML template for OTP email."""
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Your SAARTH verification code</title>
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: #0b132b;
-      color: #f8fafc;
-      margin: 0;
-      padding: 32px 16px;
-    }}
-    .container {{
-      max-width: 480px;
-      margin: 0 auto;
-      background-color: #1c2541;
-      border-radius: 14px;
-      padding: 36px 28px;
-      border: 1px solid #3a506b;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-    }}
-    .brand {{
-      font-size: 24px;
-      font-weight: 800;
-      letter-spacing: 1px;
-      color: #6fffe9;
-      margin-bottom: 20px;
-      text-align: center;
-    }}
-    .heading {{
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 12px;
-      color: #ffffff;
-      text-align: center;
-    }}
-    .desc {{
-      font-size: 14px;
-      color: #cbd5e1;
-      line-height: 1.6;
-      margin-bottom: 24px;
-      text-align: center;
-    }}
-    .otp-code {{
-      background: #0b132b;
-      border: 2px dashed #6fffe9;
-      border-radius: 10px;
-      padding: 16px;
-      text-align: center;
-      font-size: 34px;
-      font-weight: 800;
-      letter-spacing: 8px;
-      color: #6fffe9;
-      margin: 0 auto 24px auto;
-      user-select: all;
-    }}
-    .note {{
-      font-size: 12px;
-      color: #94a3b8;
-      text-align: center;
-      line-height: 1.5;
-    }}
-    .footer {{
-      margin-top: 28px;
-      padding-top: 16px;
-      border-top: 1px solid #3a506b;
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-    }}
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="brand">SAARTH</div>
-    <div class="heading">Verify your email address</div>
-    <div class="desc">
-      Use the 6-digit verification code below to activate your SAARTH account.
-      This code is valid for <strong>10 minutes</strong>.
-    </div>
-    <div class="otp-code">{otp}</div>
-    <div class="note">
-      If you did not request this verification code, please ignore this email.
-    </div>
-    <div class="footer">
-      &copy; SAARTH &bull; Personal Financial Assistant
-    </div>
-  </div>
-</body>
-</html>"""
+resend.api_key = os.environ.get("RESEND_API_KEY") or getattr(settings, "RESEND_API_KEY", "")
 
 
-def send_otp_email(to_email: str, otp: str) -> bool:
-    """Send OTP email with subject 'Your SAARTH verification code'.
+def send_otp_email(to_email: str, otp: str):
+    """Send 6-digit OTP verification email via Resend HTTP API."""
+    key = os.environ.get("RESEND_API_KEY") or getattr(settings, "RESEND_API_KEY", "")
+    if key:
+        resend.api_key = key
 
-    Uses SMTP when configured; gracefully logs to stdout/logger if SMTP is not configured.
-    """
-    subject = "Your SAARTH verification code"
-    text_content = (
-        f"Your SAARTH verification code is: {otp}\n\n"
-        f"This code is valid for 10 minutes. Use it to activate your account.\n"
-        f"If you did not create an account, you can safely ignore this email."
-    )
-    html_content = build_otp_html(otp)
-
-    # If SMTP is not configured, log clearly and succeed (ideal for local dev / testing)
-    if not settings.SMTP_HOST or not settings.SMTP_USER:
-        logger.info(
-            "[EMAIL SERVICE] SMTP not configured. OTP for %s: %s (Subject: '%s')",
-            to_email,
-            otp,
-            subject,
-        )
+    # If RESEND_API_KEY is not configured (e.g. in test or local dev without a key),
+    # log cleanly so offline tests do not crash.
+    if not resend.api_key or resend.api_key.startswith("re_test") or resend.api_key == "re_xxxxxxxxxxxx":
+        print(f"[Resend NOTICE] RESEND_API_KEY not configured. OTP for {to_email}: {otp}")
         return True
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = settings.SMTP_FROM
-        msg["To"] = to_email
-
-        part1 = MIMEText(text_content, "plain")
-        part2 = MIMEText(html_content, "html")
-        msg.attach(part1)
-        msg.attach(part2)
-
-        if settings.SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM, [to_email], msg.as_string())
-        else:
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                if settings.SMTP_TLS:
-                    server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM, [to_email], msg.as_string())
-
-        logger.info("Successfully sent OTP email to %s", to_email)
+        response = resend.Emails.send({
+            "from": "SAARTH <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": "Your SAARTH verification code",
+            "html": f"""
+            <div style="font-family: sans-serif; max-width: 400px; 
+                        margin: 0 auto; padding: 24px;">
+              <h2 style="color: #111;">Your SAARTH code</h2>
+              <p>Use this code to verify your account:</p>
+              <div style="font-size: 36px; font-weight: bold; 
+                          letter-spacing: 8px; color: #22c55e; 
+                          padding: 16px 0;">{otp}</div>
+              <p style="color: #666;">Valid for 10 minutes. 
+                 Do not share this code with anyone.</p>
+              <hr style="border: none; border-top: 1px solid #eee;">
+              <p style="color: #999; font-size: 12px;">
+                SAARTH — Know what you can safely spend today.
+              </p>
+            </div>
+            """
+        })
         return True
     except Exception as e:
-        logger.error("Failed to send OTP email to %s: %s", to_email, e)
-        # Even on SMTP delivery failure in test environments, avoid hard crashing
-        return False
+        print(f"Resend email error: {e}")
+        raise e

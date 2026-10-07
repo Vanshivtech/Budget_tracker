@@ -12,3 +12,4 @@ langchain-groq
 openpyxl
 reportlab
 pywebpush
+resend

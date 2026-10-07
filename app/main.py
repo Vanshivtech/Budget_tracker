@@ -433,6 +433,9 @@ class AdminDeleteUserRequest(BaseModel):
 
 @app.post("/api/signup", response_model=AuthResponse)
 @app.post("/auth/signup", response_model=AuthResponse)
+@app.post("/auth/register", response_model=AuthResponse)
+@app.post("/api/auth/register", response_model=AuthResponse)
+@app.post("/api/register", response_model=AuthResponse)
 def signup(req: AuthRequest, response: Response):
     """Register a new user account with email and password."""
     email = req.email.strip().lower()
@@ -608,9 +611,6 @@ def send_otp_endpoint(req: SendOtpRequest):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found with this email.",
         )
-
-    if user.get("bypass_verification"):
-        return {"status": "ok", "message": "Email is already verified (bypassed)."}
 
     otp = generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
