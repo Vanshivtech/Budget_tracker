@@ -2,6 +2,7 @@
 Authentication module: password hashing via bcrypt, JWT token generation & verification,
 and FastAPI dependency for securing endpoints.
 """
+import secrets
 from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
@@ -27,12 +28,32 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: int, email: str) -> str:
-    """Issue a signed JWT access token for the given user."""
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_EXPIRATION_DAYS)
+def create_access_token(user_id: int, email: str, expires_delta: timedelta | None = None) -> str:
+    """Issue a signed JWT access token (15 min default)."""
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user_id),
         "email": email,
+        "type": "access",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def create_refresh_token(user_id: int, email: str, expires_delta: timedelta | None = None) -> str:
+    """Issue a signed JWT refresh token (30 days default)."""
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "type": "refresh",
+        "jti": secrets.token_hex(16),
         "exp": expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
@@ -51,6 +72,25 @@ def decode_token(token: str) -> dict:
         )
 
 
+def decode_refresh_token(token: str) -> dict:
+    """Decode and validate a JWT refresh token."""
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type: expected refresh token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return payload
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> dict:
     """FastAPI dependency to extract and authenticate the current user from Bearer token."""
     if not credentials:
@@ -60,6 +100,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
     payload = decode_token(credentials.credentials)
+    if payload.get("type") == "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token cannot be used as access token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         user_id = int(payload.get("sub", 0))
     except (TypeError, ValueError):

@@ -290,6 +290,13 @@ def init_db() -> None:
             ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_reset BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 
+            -- Feature 2: Email verification & OTP
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS bypass_verification BOOLEAN DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS otp VARCHAR(6);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMPTZ;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user';
+
             CREATE TABLE IF NOT EXISTS errors (
                 id         SERIAL PRIMARY KEY,
                 route      VARCHAR(500) NOT NULL,
@@ -314,19 +321,50 @@ def init_db() -> None:
             ON CONFLICT (key) DO NOTHING;
         """)
 
+        # One-time grandfathering migration for existing users
+        cur.execute("SELECT value FROM app_settings WHERE key = 'email_verification_grandfathered';")
+        migrated = cur.fetchone()
+        if not migrated or migrated.get("value") != "true":
+            cur.execute("""
+                UPDATE users
+                SET email_verified = TRUE, bypass_verification = FALSE;
+                INSERT INTO app_settings (key, value)
+                VALUES ('email_verification_grandfathered', 'true')
+                ON CONFLICT (key) DO UPDATE SET value = 'true';
+            """)
+
+        # Exceptions: shiv@gmail.com and all accounts with role = 'admin' bypass verification
+        cur.execute("""
+            UPDATE users
+            SET bypass_verification = TRUE, email_verified = TRUE
+            WHERE LOWER(email) = 'shiv@gmail.com' OR role = 'admin';
+        """)
+
 
 # ---------- Users ----------
 
-def create_user(email: str, password_hash: str) -> dict:
+def create_user(
+    email: str,
+    password_hash: str,
+    email_verified: bool = False,
+    bypass_verification: bool = False,
+    otp: str | None = None,
+    otp_expires_at: datetime | None = None,
+    role: str = "user",
+) -> dict:
     """Create a new user record in Postgres."""
+    normalized_email = email.lower().strip()
+    if normalized_email == "shiv@gmail.com":
+        bypass_verification = True
+        email_verified = True
     with get_db_cursor() as cur:
         cur.execute(
             """
-            INSERT INTO users (email, password_hash)
-            VALUES (%s, %s)
-            RETURNING id, email, created_at
+            INSERT INTO users (email, password_hash, email_verified, bypass_verification, otp, otp_expires_at, role)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, email, email_verified, bypass_verification, otp, otp_expires_at, role, created_at
             """,
-            (email.lower().strip(), password_hash),
+            (normalized_email, password_hash, email_verified, bypass_verification, otp, otp_expires_at, role),
         )
         row = cur.fetchone()
         created_at_str = (
@@ -337,8 +375,55 @@ def create_user(email: str, password_hash: str) -> dict:
         return {
             "id": row["id"],
             "email": row["email"],
+            "email_verified": bool(row.get("email_verified", email_verified)),
+            "bypass_verification": bool(row.get("bypass_verification", bypass_verification)),
+            "otp": row.get("otp", otp),
+            "otp_expires_at": row.get("otp_expires_at", otp_expires_at),
+            "role": row.get("role", role),
             "created_at": created_at_str,
         }
+
+
+def set_user_otp(email: str, otp: str, expires_at: datetime) -> bool:
+    """Update user's 6-digit OTP and expiration timestamp."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+            SET otp = %s, otp_expires_at = %s
+            WHERE LOWER(email) = LOWER(%s)
+            """,
+            (otp, expires_at, email.strip()),
+        )
+        return cur.rowcount > 0
+
+
+def verify_user_email(email: str) -> bool:
+    """Mark email as verified and clear OTP."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+            SET email_verified = TRUE, otp = NULL, otp_expires_at = NULL
+            WHERE LOWER(email) = LOWER(%s)
+            """,
+            (email.strip(),),
+        )
+        return cur.rowcount > 0
+
+
+def set_user_bypass_verification(email: str, bypass: bool = True) -> bool:
+    """Set bypass_verification for user."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE users
+            SET bypass_verification = %s, email_verified = TRUE
+            WHERE LOWER(email) = LOWER(%s)
+            """,
+            (bypass, email.strip()),
+        )
+        return cur.rowcount > 0
 
 
 def get_user_by_email(email: str) -> dict | None:

@@ -10,7 +10,7 @@ import calendar
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from pydantic import BaseModel, field_validator
 
 from app.config import settings
 from app.db import (
-    init_db, get_summary, create_user, get_user_by_email,
+    init_db, get_summary, create_user, get_user_by_email, get_user_by_id,
     get_udhar_summary, add_udhar, record_udhar_repayment,
     get_dashboard, save_chat_message, get_chat_history,
     get_goals, set_savings_goal, contribute_to_goal,
@@ -63,10 +63,16 @@ from app.db import (
     update_udhar_entry, delete_udhar_entry, resolve_udhar_due_date,
     update_savings_goal, delete_savings_goal,
     update_recurring_expense, delete_recurring_expense, toggle_recurring_expense,
+    # Email Verification & OTP
+    set_user_otp, verify_user_email, set_user_bypass_verification,
 )
 from app.auth import (
-    hash_password, verify_password, create_access_token, get_current_user,
+    hash_password, verify_password, create_access_token, create_refresh_token,
+    decode_token, decode_refresh_token, get_current_user,
     create_admin_token, get_current_admin,
+)
+from app.email import (
+    validate_email_address, generate_otp, send_otp_email, DISPOSABLE_EMAIL_DOMAINS,
 )
 from app.agent import handle_user_message, clear_user_agent_sessions
 from app.llm import llm_pool
@@ -158,8 +164,23 @@ class AuthRequest(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    token: str
-    user: dict
+    token: str = ""
+    user: dict = {}
+    requires_verification: bool = False
+    message: str | None = None
+
+
+class SendOtpRequest(BaseModel):
+    email: str
+
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    otp: str
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -411,13 +432,15 @@ class AdminDeleteUserRequest(BaseModel):
 # ---------- Auth Routes ----------
 
 @app.post("/api/signup", response_model=AuthResponse)
-def signup(req: AuthRequest):
+@app.post("/auth/signup", response_model=AuthResponse)
+def signup(req: AuthRequest, response: Response):
     """Register a new user account with email and password."""
     email = req.email.strip().lower()
-    if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email):
+    valid_email, err_msg = validate_email_address(email)
+    if not valid_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please provide a valid email address.",
+            detail=err_msg,
         )
     if len(req.password) < 8:
         raise HTTPException(
@@ -427,41 +450,96 @@ def signup(req: AuthRequest):
 
     existing = get_user_by_email(email)
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email already exists.",
+        if existing.get("email_verified") or existing.get("bypass_verification"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An account with this email already exists.",
+            )
+        # Unverified existing account: update password and refresh OTP
+        otp = generate_otp()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        set_user_otp(email, otp, expires_at)
+        pw_hash = hash_password(req.password)
+        update_user_password(existing["id"], pw_hash)
+        send_otp_email(email, otp)
+        return AuthResponse(
+            token="",
+            user={"id": existing["id"], "email": email},
+            requires_verification=True,
+            message="Verification code sent to your email. Please verify your account.",
         )
 
     pw_hash = hash_password(req.password)
-    user = create_user(email, pw_hash)
-    update_user_last_login(user["id"])
-    token = create_access_token(user["id"], user["email"])
+    is_bypass = (email == "shiv@gmail.com")
 
-    # Set username if provided at signup
+    if is_bypass:
+        user = create_user(
+            email=email,
+            password_hash=pw_hash,
+            email_verified=True,
+            bypass_verification=True,
+        )
+        update_user_last_login(user["id"])
+        token = create_access_token(user["id"], user["email"])
+        refresh_token = create_refresh_token(user["id"], user["email"])
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        if req.username and req.username.strip():
+            try:
+                set_username(user["id"], req.username.strip())
+            except ValueError:
+                pass
+        user_display = get_user_display(user["id"])
+        return AuthResponse(
+            token=token,
+            user={
+                "id": user["id"],
+                "email": user["email"],
+                "username": user_display.get("username"),
+                "avatar_id": user_display.get("avatar_id", 1),
+                "needs_username": user_display.get("needs_username", True),
+                "force_password_reset": False,
+            },
+            requires_verification=False,
+        )
+
+    # Regular new user requiring email verification
+    otp = generate_otp()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    user = create_user(
+        email=email,
+        password_hash=pw_hash,
+        email_verified=False,
+        bypass_verification=False,
+        otp=otp,
+        otp_expires_at=expires_at,
+    )
     if req.username and req.username.strip():
         try:
             set_username(user["id"], req.username.strip())
         except ValueError:
-            pass  # Non-blocking; user can set it later
+            pass
 
-    user_display = get_user_display(user["id"])
-
+    send_otp_email(email, otp)
     return AuthResponse(
-        token=token,
-        user={
-            "id": user["id"],
-            "email": user["email"],
-            "username": user_display.get("username"),
-            "avatar_id": user_display.get("avatar_id", 1),
-            "needs_username": user_display.get("needs_username", True),
-            "force_password_reset": False,
-        },
+        token="",
+        user={"id": user["id"], "email": user["email"]},
+        requires_verification=True,
+        message="Verification code sent to your email. Please verify your account before logging in.",
     )
 
 
 @app.post("/api/login", response_model=AuthResponse)
-def login(req: AuthRequest):
-    """Authenticate with email and password, returns a signed JWT."""
+@app.post("/auth/login", response_model=AuthResponse)
+def login(req: AuthRequest, response: Response):
+    """Authenticate with email and password, returns signed JWT and sets refresh cookie."""
     email = req.email.strip().lower()
     user = get_user_by_email(email)
     if not user or not verify_password(req.password, user["password_hash"]):
@@ -476,8 +554,27 @@ def login(req: AuthRequest):
             detail="Account suspended, contact support",
         )
 
+    # Email verification check
+    if not user.get("email_verified") and not user.get("bypass_verification"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. Please verify your email before logging in.",
+        )
+
     update_user_last_login(user["id"])
     token = create_access_token(user["id"], user["email"])
+    refresh_token = create_refresh_token(user["id"], user["email"])
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
     user_display = get_user_display(user["id"])
 
     return AuthResponse(
@@ -491,6 +588,204 @@ def login(req: AuthRequest):
             "force_password_reset": bool(user.get("force_password_reset")),
         },
     )
+
+
+@app.post("/auth/send-otp")
+@app.post("/api/auth/send-otp")
+def send_otp_endpoint(req: SendOtpRequest):
+    """Send or resend a 6-digit OTP code to the given email."""
+    email = req.email.strip().lower()
+    valid_email, err_msg = validate_email_address(email)
+    if not valid_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err_msg,
+        )
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found with this email.",
+        )
+
+    if user.get("bypass_verification"):
+        return {"status": "ok", "message": "Email is already verified (bypassed)."}
+
+    otp = generate_otp()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    set_user_otp(email, otp, expires_at)
+    send_otp_email(email, otp)
+
+    return {"status": "ok", "message": "Verification code sent to your email."}
+
+
+@app.post("/auth/verify-otp")
+@app.post("/api/auth/verify-otp")
+def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
+    """Verify 6-digit OTP code, activate account, and issue tokens."""
+    email = req.email.strip().lower()
+    otp = req.otp.strip()
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found with this email.",
+        )
+
+    if user.get("bypass_verification") or user.get("email_verified"):
+        token = create_access_token(user["id"], user["email"])
+        refresh_token = create_refresh_token(user["id"], user["email"])
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        user_display = get_user_display(user["id"])
+        return {
+            "status": "ok",
+            "message": "Email is already verified.",
+            "token": token,
+            "user": user_display,
+        }
+
+    stored_otp = user.get("otp")
+    if not stored_otp or stored_otp != otp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code.",
+        )
+
+    expires_at = user.get("otp_expires_at")
+    now = datetime.now(timezone.utc)
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not expires_at or now > expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code has expired. Please request a new code.",
+        )
+
+    verify_user_email(email)
+    update_user_last_login(user["id"])
+    token = create_access_token(user["id"], user["email"])
+    refresh_token = create_refresh_token(user["id"], user["email"])
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+    user_display = get_user_display(user["id"])
+    return {
+        "status": "ok",
+        "message": "Email verified successfully.",
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "username": user_display.get("username"),
+            "avatar_id": user_display.get("avatar_id", 1),
+            "needs_username": user_display.get("needs_username", False),
+        },
+    }
+
+
+@app.post("/auth/refresh")
+@app.post("/api/auth/refresh")
+@app.post("/api/refresh")
+def refresh_token_endpoint(
+    request: Request,
+    response: Response,
+    req: RefreshTokenRequest | None = None,
+):
+    """Validate refresh token and rotate with new access token and refresh token."""
+    token = request.cookies.get("refresh_token")
+    if not token and req and req.refresh_token:
+        token = req.refresh_token
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token required in cookie or body",
+        )
+
+    payload = decode_refresh_token(token)
+    try:
+        user_id = int(payload.get("sub", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token subject",
+        )
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    if user.get("suspended_at"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended, contact support",
+        )
+
+    new_access_token = create_access_token(user["id"], user["email"])
+    new_refresh_token = create_refresh_token(user["id"], user["email"])
+
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+    user_display = get_user_display(user["id"])
+    return {
+        "token": new_access_token,
+        "access_token": new_access_token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "username": user_display.get("username"),
+            "avatar_id": user_display.get("avatar_id", 1),
+            "needs_username": user_display.get("needs_username", False),
+            "force_password_reset": bool(user.get("force_password_reset")),
+        },
+    }
+
+
+@app.post("/auth/logout")
+@app.post("/api/auth/logout")
+@app.post("/api/logout")
+def logout_endpoint(response: Response):
+    """Clear refresh token cookie."""
+    response.delete_cookie(
+        key="refresh_token",
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return {"status": "ok", "message": "Logged out successfully"}
 
 
 @app.post("/api/account/change-password")
