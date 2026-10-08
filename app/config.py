@@ -34,13 +34,13 @@ class Settings:
     # Default keys provided so Web Push works out of the box, can be overridden in .env
     VAPID_PUBLIC_KEY: str = os.getenv(
         "VAPID_PUBLIC_KEY",
-        "BFgUUCw7TdlAzVVLljypdhnjNmR6HOWkLuxNWmOkth2sC2dGSeH6tCwX4RDN_Nr5FPQ3ZGsA9fZ59oRcxySljyA",
-    )
+        "BIowIx_zhGtJYCv-e-ps_fCKGV9RHKMdX1tfIBDLf-kIimh709qQVHedJfM0cwzbjuAbFmfZf47YAhyqtyrQl38",
+    ).strip().strip('"\'')
     VAPID_PRIVATE_KEY: str = os.getenv(
         "VAPID_PRIVATE_KEY",
-        "mMNnNYuz5PeeZaCgVP2uvqF_5VuC9omraznptIurZEE",
-    )
-    VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:admin@budgettracker.local")
+        "JFG5SawDwfrKox3rK8g2cjKclz3D0M1Ni4kqJ2Ao1dE",
+    ).strip().strip('"\'')
+    VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:admin@budgettracker.local").strip().strip('"\'')
 
     # --- Display ---
     CURRENCY_SYMBOL: str = os.getenv("CURRENCY_SYMBOL", "\u20b9")

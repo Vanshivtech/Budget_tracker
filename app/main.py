@@ -86,6 +86,7 @@ from app.importer import (
     batch_llm_categorize, MAX_FILE_BYTES, MAX_ROWS,
 )
 from app.push import send_web_push, send_engagement_notification
+from pywebpush import webpush, WebPushException
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("budget-tracker")
@@ -141,17 +142,34 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SAARTH -- Make money meaningful", lifespan=lifespan)
 
 
+def _safe_print(msg: str):
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
-allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+default_origins = [
+    "https://saarthai.lovable.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
+env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+allowed_origins = list(dict.fromkeys(default_origins + env_origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https://.*\.lovable\.app$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["*"],
 )
 
 
@@ -168,6 +186,7 @@ class AuthResponse(BaseModel):
     user: dict = {}
     requires_verification: bool = False
     message: str | None = None
+    refresh_token: str | None = None
 
 
 class SendOtpRequest(BaseModel):
@@ -398,9 +417,10 @@ class ConfirmImportRequest(BaseModel):
 
 
 class PushSubscribeRequest(BaseModel):
-    endpoint: str
-    keys: dict
+    endpoint: str | None = None
+    keys: dict | None = None
     preferences: dict | None = None
+    subscription: dict | None = None
 
 
 class PushUnsubscribeRequest(BaseModel):
@@ -491,9 +511,10 @@ def signup(req: AuthRequest, response: Response):
             max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
             httponly=True,
             secure=True,
-            samesite="lax",
+            samesite="none",
             path="/",
         )
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
         if req.username and req.username.strip():
             try:
                 set_username(user["id"], req.username.strip())
@@ -502,6 +523,7 @@ def signup(req: AuthRequest, response: Response):
         user_display = get_user_display(user["id"])
         return AuthResponse(
             token=token,
+            refresh_token=refresh_token,
             user={
                 "id": user["id"],
                 "email": user["email"],
@@ -574,14 +596,16 @@ def login(req: AuthRequest, response: Response):
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
         path="/",
     )
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
 
     return AuthResponse(
         token=token,
+        refresh_token=refresh_token,
         user={
             "id": user["id"],
             "email": user["email"],
@@ -643,14 +667,16 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
             max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
             httponly=True,
             secure=True,
-            samesite="lax",
+            samesite="none",
             path="/",
         )
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
         user_display = get_user_display(user["id"])
         return {
             "status": "ok",
             "message": "Email is already verified.",
             "token": token,
+            "refresh_token": refresh_token,
             "user": user_display,
         }
 
@@ -682,15 +708,17 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
         path="/",
     )
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
         "status": "ok",
         "message": "Email verified successfully.",
         "token": token,
+        "refresh_token": refresh_token,
         "user": {
             "id": user["id"],
             "email": user["email"],
@@ -710,15 +738,19 @@ def refresh_token_endpoint(
     req: RefreshTokenRequest | None = None,
 ):
     """Validate refresh token and rotate with new access token and refresh token."""
+    _safe_print(f"🔄 [REFRESH] Received cookies: {dict(request.cookies)}, origin: {request.headers.get('origin')}")
     token = request.cookies.get("refresh_token")
     if not token and req and req.refresh_token:
         token = req.refresh_token
+        _safe_print("🔄 [REFRESH] Token extracted from JSON request body")
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header.split(" ", 1)[1].strip()
+            _safe_print("🔄 [REFRESH] Token extracted from Authorization Bearer header")
 
     if not token:
+        _safe_print(f"❌ [REFRESH] No refresh token found. Available cookies: {list(request.cookies.keys())}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token required in cookie or body",
@@ -754,14 +786,16 @@ def refresh_token_endpoint(
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
         path="/",
     )
+    _safe_print(f"🍪 [REFRESH] Rotated refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
         "token": new_access_token,
         "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "user": {
             "id": user["id"],
             "email": user["email"],
@@ -783,9 +817,39 @@ def logout_endpoint(response: Response):
         path="/",
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
     )
     return {"status": "ok", "message": "Logged out successfully"}
+
+
+@app.get("/api/debug/cookies")
+@app.get("/debug/cookies")
+def debug_cookies(request: Request):
+    """Temporary debug endpoint to inspect cookies and CORS headers."""
+    client_origin = request.headers.get("origin", "")
+    is_allowed = (
+        client_origin in allowed_origins
+        or bool(re.match(r"^https://.*\.lovable\.app$", client_origin))
+    )
+    return {
+        "cookies_received": dict(request.cookies),
+        "has_refresh_token_cookie": "refresh_token" in request.cookies,
+        "client_origin": client_origin,
+        "is_origin_allowed": is_allowed,
+        "configured_allowed_origins": allowed_origins,
+        "cors_allow_credentials": True,
+        "cookie_settings": {
+            "samesite": "none",
+            "secure": True,
+            "httponly": True,
+            "path": "/",
+            "domain": None,
+        },
+        "request_headers": {
+            k: v for k, v in request.headers.items()
+            if k.lower() in ("origin", "cookie", "referer", "user-agent", "host", "authorization")
+        },
+    }
 
 
 @app.post("/api/account/change-password")
@@ -2045,11 +2109,23 @@ def projections_view(user: dict = Depends(get_current_user)):
 # ---------- Tier 3: Web Push Notifications ----------
 
 @app.get("/api/push/vapid-key")
+@app.get("/api/push/vapid-public-key")
 def push_vapid_key():
     """Return the public VAPID key and key_hash for web push subscription."""
     pub = settings.VAPID_PUBLIC_KEY
     key_hash = pub[:8] if pub else ""
-    return {"public_key": pub, "key_hash": key_hash}
+    return {"public_key": pub, "vapid_public_key": pub, "key_hash": key_hash}
+
+
+@app.get("/api/push/subscription-status")
+def push_subscription_status(user: dict = Depends(get_current_user)):
+    """Check if the current authenticated user has any active push subscriptions."""
+    subs = get_user_push_subscriptions(user["id"])
+    count = len(subs)
+    return {
+        "has_subscription": count > 0,
+        "subscription_count": count,
+    }
 
 
 @app.post("/api/push/subscribe")
@@ -2058,18 +2134,30 @@ def push_subscribe(req: PushSubscribeRequest, user: dict = Depends(get_current_u
     if get_app_setting("push_notifications_enabled", "true").lower() != "true":
         raise HTTPException(status_code=403, detail="Push notifications are currently disabled by administrator")
 
-    p256dh = req.keys.get("p256dh", "")
-    auth = req.keys.get("auth", "")
+    endpoint = req.endpoint
+    keys = req.keys or {}
+    if req.subscription and isinstance(req.subscription, dict):
+        if not endpoint:
+            endpoint = req.subscription.get("endpoint")
+        if not keys:
+            keys = req.subscription.get("keys", {})
+
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing push endpoint.")
+
+    p256dh = keys.get("p256dh", "")
+    auth = keys.get("auth", "")
     if not p256dh or not auth:
         raise HTTPException(status_code=400, detail="Missing p256dh or auth in push keys.")
 
     sub = save_push_subscription(
         user_id=user["id"],
-        endpoint=req.endpoint,
+        endpoint=endpoint,
         p256dh=p256dh,
         auth=auth,
         preferences=req.preferences,
     )
+    _safe_print(f"📱 New subscription saved for user {user['id']}")
     return {"status": "ok", "subscription": sub}
 
 
@@ -2080,15 +2168,54 @@ def push_unsubscribe(req: PushUnsubscribeRequest, user: dict = Depends(get_curre
     return {"status": "ok", "removed": ok}
 
 
+@app.get("/api/push/debug")
+def push_debug(user: dict = Depends(get_current_user)):
+    """Debug endpoint for VAPID configuration and push subscriptions."""
+    vapid_pub = (os.environ.get("VAPID_PUBLIC_KEY") or settings.VAPID_PUBLIC_KEY or "").strip().strip('"\'')
+    vapid_priv = (os.environ.get("VAPID_PRIVATE_KEY") or settings.VAPID_PRIVATE_KEY or "").strip().strip('"\'')
+
+    total_subs = 0
+    user_subs = 0
+    last_created = None
+
+    from app.db import get_db_cursor
+
+    with get_db_cursor() as cur:
+        cur.execute("SELECT COUNT(*) as cnt FROM push_subscriptions;")
+        total_subs = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT COUNT(*) as cnt FROM push_subscriptions WHERE user_id = %s;", (user["id"],))
+        user_subs = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT created_at FROM push_subscriptions ORDER BY created_at DESC LIMIT 1;")
+        row = cur.fetchone()
+        if row and row.get("created_at"):
+            last_created = row["created_at"].isoformat()
+
+    return {
+        "vapid_public_key_set": bool(vapid_pub),
+        "vapid_private_key_set": bool(vapid_priv),
+        "subscriptions_count": total_subs,
+        "user_subscriptions": user_subs,
+        "last_subscription_created": last_created,
+    }
+
+
 @app.post("/api/push/test")
 def push_test_trigger(user: dict = Depends(get_current_user)):
     """Send a test push notification to user's registered devices."""
     subs = get_user_push_subscriptions(user["id"])
+    _safe_print(f"🔔 /api/push/test called for user {user['id']} ({user.get('email')}), found {len(subs)} subscription(s)")
     if not subs:
-        raise HTTPException(status_code=404, detail="No push subscriptions found for this account.")
+        return {
+            "status": "no_subscribers",
+            "message": "No active subscriptions. Please enable notifications first.",
+            "sent": 0,
+        }
 
     sent = 0
     failed = 0
+    last_error = ""
     for s in subs:
         sub_info = {
             "endpoint": s["endpoint"],
@@ -2097,20 +2224,33 @@ def push_test_trigger(user: dict = Depends(get_current_user)):
                 "auth": s["auth"],
             },
         }
-        success, code, err = send_web_push(
-            subscription_info=sub_info,
-            title="SAARTH Alert",
-            body="Test notification received successfully. Your SAARTH alerts are active.",
-            url="/",
-            tag="test-alert",
-        )
-        if success:
-            sent += 1
-        else:
+        try:
+            success, code, err = send_web_push(
+                subscription_info=sub_info,
+                title="SAARTH Alert",
+                body="Test notification received successfully. Your SAARTH alerts are active.",
+                url="/",
+                tag="test-alert",
+            )
+            if success:
+                sent += 1
+            else:
+                failed += 1
+                last_error = err or f"HTTP {code}"
+        except WebPushException as ex:
             failed += 1
-            if code in (404, 410):
-                print(f"[PUSH] Pruning expired/invalid subscription {s['endpoint']} (HTTP {code})")
-                remove_push_subscription(s["endpoint"])
+            status_code = ex.response.status_code if ex.response is not None else 0
+            resp_text = ex.response.text if ex.response is not None else ""
+            last_error = f"WebPushException HTTP {status_code}: {resp_text or str(ex)}"
+        except Exception as ex:
+            failed += 1
+            last_error = str(ex)
+
+    if sent == 0 and failed > 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Push notification delivery failed: {last_error}",
+        )
 
     return {"status": "ok", "sent": sent, "failed": failed}
 

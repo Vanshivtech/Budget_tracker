@@ -5,12 +5,20 @@ and pruning expired endpoints (HTTP 404/410).
 """
 import json
 import logging
+import sys
 from typing import Optional, Dict, Any
 from pywebpush import webpush, WebPushException
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_print(msg: str):
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
 
 
 def send_web_push(
@@ -20,21 +28,11 @@ def send_web_push(
     url: str = "/",
     tag: str = "general",
 ) -> tuple[bool, int, str]:
-    """Send an encrypted Web Push notification to a single browser endpoint.
-    subscription_info format:
-    {
-        "endpoint": "https://...",
-        "keys": {
-            "p256dh": "...",
-            "auth": "..."
-        }
-    }
-    Returns: (success: bool, status_code: int, error_message: str)
-    """
+    """Send an encrypted Web Push notification to a single browser endpoint."""
     endpoint = subscription_info.get("endpoint", "")
     if not settings.VAPID_PRIVATE_KEY:
         logger.warning("[PUSH] VAPID_PRIVATE_KEY not set. Cannot send push notification.")
-        print("[PUSH] VAPID_PRIVATE_KEY not set. Cannot send push notification.")
+        _safe_print("[PUSH] VAPID_PRIVATE_KEY not set. Cannot send push notification.")
         return False, 0, "VAPID private key is not configured"
 
     payload = json.dumps({
@@ -57,27 +55,24 @@ def send_web_push(
             timeout=10,
         )
         status = response.status_code if hasattr(response, "status_code") else 201
-        logger.info(f"[PUSH] Push notification sent successfully to {endpoint[:45]}..., status: {status}")
-        print(f"[PUSH] Push notification sent successfully to {endpoint[:45]}..., status: {status}")
+        _safe_print(f"✅ Push sent successfully to {endpoint[:30]}...")
         return True, status, ""
     except WebPushException as ex:
-        status_code = 0
-        if ex.response is not None:
-            status_code = ex.response.status_code
-        logger.warning(f"[PUSH] WebPushException sending to {endpoint}: {ex} (HTTP {status_code})")
-        print(f"[PUSH] Failed to send to {endpoint}: {ex} (HTTP {status_code})")
-        if status_code in (404, 410):
+        _safe_print(f"❌ Push failed: {ex}")
+        _safe_print(f"❌ Response: {ex.response.text if ex.response else 'no response'}")
+        _safe_print(f"❌ Status: {ex.response.status_code if ex.response else 'none'}")
+        status_code = ex.response.status_code if ex.response is not None else 0
+        if status_code in (404, 410, 403):
             try:
                 from app.db import remove_push_subscription
                 remove_push_subscription(endpoint)
-                print(f"[PUSH] Immediately deleted expired/unsubscribed endpoint {endpoint} (HTTP {status_code})")
+                _safe_print(f"[PUSH] Deleted invalid/expired subscription {endpoint} (HTTP {status_code})")
             except Exception as rem_err:
-                logger.error(f"[PUSH] Failed to delete expired subscription {endpoint}: {rem_err}")
-        return False, status_code, str(ex)
+                logger.error(f"[PUSH] Failed to delete invalid subscription {endpoint}: {rem_err}")
+        raise ex
     except Exception as ex:
-        logger.error(f"[PUSH] Unexpected error sending push notification to {endpoint}: {ex}")
-        print(f"[PUSH] Failed to send to {endpoint}: {ex}")
-        return False, 0, str(ex)
+        _safe_print(f"❌ Push unexpected error: {ex}")
+        raise ex
 
 
 def send_engagement_notification(
@@ -87,11 +82,15 @@ def send_engagement_notification(
     url: str = "/",
 ) -> tuple[bool, int, str]:
     """Send an engagement push notification to a single browser endpoint."""
-    return send_web_push(
-        subscription_info=subscription_info,
-        title=title,
-        body=body,
-        url=url,
-        tag="engagement",
-    )
+    try:
+        return send_web_push(
+            subscription_info=subscription_info,
+            title=title,
+            body=body,
+            url=url,
+            tag="engagement",
+        )
+    except Exception as ex:
+        status_code = getattr(getattr(ex, "response", None), "status_code", 0) or 0
+        return False, status_code, str(ex)
 
