@@ -155,6 +155,14 @@ def log_expense(amount: float, category: str, note: str = "", force: bool = Fals
         for tag in tag_list:
             db.add_transaction_tag(user_id, record["id"], tag)
 
+    # Trigger notification checks
+    try:
+        from app.scheduler import check_budget_alerts, check_large_expense
+        check_budget_alerts(user_id, cat, amount)
+        check_large_expense(user_id, amount, cat, merchant)
+    except Exception as e:
+        logger.error(f"Error checking budget/large expense alerts from agent: {e}")
+
     note_str = f" for {clean_note}" if clean_note else ""
     merchant_str = f" ({merchant})" if merchant and merchant.lower() != clean_note.lower() else ""
     return f"Logged Rs {amount:.0f}{note_str}{merchant_str} under {cat.capitalize()}."
@@ -355,6 +363,12 @@ def contribute_to_goal(goal_id: int, amount: float, config: RunnableConfig = Non
     updated = db.contribute_to_goal(user_id=user_id, goal_id=goal_id, amount=amount)
     if not updated:
         return f"Goal #{goal_id} not found."
+    try:
+        from app.scheduler import check_goal_milestones
+        check_goal_milestones(user_id, goal_id)
+    except Exception as e:
+        logger.error(f"Error checking goal milestones from agent: {e}")
+
     return (
         f"Added Rs {amount:.0f} to '{updated['name']}'. "
         f"Progress: Rs {updated['saved_amount']:.0f} / Rs {updated['target_amount']:.0f} "

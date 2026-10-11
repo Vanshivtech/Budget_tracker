@@ -85,8 +85,17 @@ from app.importer import (
     parse_csv_content, parse_plain_text_statements, categorize_by_rule,
     batch_llm_categorize, MAX_FILE_BYTES, MAX_ROWS,
 )
-from app.push import send_web_push, send_engagement_notification
+from app.push import send_web_push, send_engagement_notification, send_push_to_user
 from pywebpush import webpush, WebPushException
+from app.scheduler import (
+    start_scheduler,
+    stop_scheduler,
+    check_budget_alerts,
+    check_large_expense,
+    check_goal_milestones,
+    send_daily_morning_notifications,
+    send_bill_due_notifications,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("budget-tracker")
@@ -134,7 +143,15 @@ async def lifespan(app: FastAPI):
         logger.exception("Initial recurring bills check failed")
     task_recurring = asyncio.create_task(_daily_recurring_scheduler())
     task_engagement = asyncio.create_task(_engagement_notification_scheduler())
+    try:
+        start_scheduler()
+    except Exception:
+        logger.exception("Failed to start APScheduler")
     yield
+    try:
+        stop_scheduler()
+    except Exception:
+        pass
     task_recurring.cancel()
     task_engagement.cancel()
 
@@ -1104,6 +1121,11 @@ def goal_create(req: GoalCreateRequest, user: dict = Depends(get_current_user)):
         target_amount=req.target_amount,
         target_date=req.target_date,
     )
+    if goal and goal.get("id"):
+        try:
+            check_goal_milestones(user["id"], goal["id"])
+        except Exception as e:
+            logger.error(f"Error checking goal milestones: {e}")
     return goal
 
 
@@ -1115,6 +1137,10 @@ def goal_contribute(req: GoalContributeRequest, user: dict = Depends(get_current
     updated = contribute_to_goal(user_id=user["id"], goal_id=req.goal_id, amount=req.amount)
     if not updated:
         raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        check_goal_milestones(user["id"], req.goal_id)
+    except Exception as e:
+        logger.error(f"Error checking goal milestones: {e}")
     return updated
 
 
@@ -1132,6 +1158,10 @@ def goal_update(goal_id: int, req: GoalUpdateRequest, user: dict = Depends(get_c
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        check_goal_milestones(user["id"], goal_id)
+    except Exception as e:
+        logger.error(f"Error checking goal milestones: {e}")
     return updated
 
 
@@ -1317,6 +1347,7 @@ def tags_list(user: dict = Depends(get_current_user)):
 # ---------- Transaction Manual Entry, Search & Management ----------
 
 @app.post("/api/transactions")
+@app.post("/api/expenses")
 def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_current_user)):
     """Manually add a new transaction."""
     if req.amount <= 0:
@@ -1340,6 +1371,14 @@ def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_c
     else:
         tx["tags"] = []
     store_undo_state(user["id"], "log", "transaction", tx["id"], None)
+
+    # Trigger automatic notification checks
+    try:
+        check_budget_alerts(user["id"], tx["category"], tx["amount"])
+        check_large_expense(user["id"], tx["amount"], tx["category"], tx.get("merchant"))
+    except Exception as e:
+        logger.error(f"Error triggering push alerts on transaction create: {e}")
+
     return tx
 
 

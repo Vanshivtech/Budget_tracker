@@ -340,6 +340,43 @@ def init_db() -> None:
             WHERE LOWER(email) = 'shiv@gmail.com' OR role = 'admin';
         """)
 
+        # Automatic push notifications schema
+        cur.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;
+
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                type VARCHAR(50) NOT NULL,
+                category VARCHAR(100),
+                reference_id INTEGER,
+                metadata JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_notification_log_lookup ON notification_log(user_id, type, created_at);
+
+            CREATE TABLE IF NOT EXISTS user_snapshots (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                date DATE NOT NULL,
+                monthly_income NUMERIC(12, 2) DEFAULT 0,
+                total_budgeted NUMERIC(12, 2) DEFAULT 0,
+                days_in_month INTEGER DEFAULT 30,
+                safe_to_spend NUMERIC(12, 2) DEFAULT 0
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_user_snapshots_unique ON user_snapshots(user_id, date);
+
+            DROP VIEW IF EXISTS bills CASCADE;
+            CREATE VIEW bills AS
+            SELECT id, user_id, name, amount, category, frequency, next_due_date AS due_date, (NOT active) AS is_paid, created_at
+            FROM recurring_expenses;
+
+            DROP VIEW IF EXISTS goals CASCADE;
+            CREATE VIEW goals AS
+            SELECT id, user_id, name, target_amount, saved_amount AS current_amount, target_date, created_at
+            FROM savings_goals;
+        """)
+
 
 # ---------- Users ----------
 
