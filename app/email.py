@@ -118,7 +118,7 @@ def send_otp_email(to_email: str, otp: str):
                  Do not share this code with anyone.</p>
               <hr style="border: none; border-top: 1px solid #eee;">
               <p style="color: #999; font-size: 12px;">
-                SAARTH — Know what you can safely spend today.
+                <a href="https://saarthh.in" style="color: #22c55e; text-decoration: none; font-weight: bold;">SAARTH</a> — Know what you can safely spend today.
               </p>
             </div>
             """

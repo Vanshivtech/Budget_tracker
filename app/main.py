@@ -169,25 +169,55 @@ def _safe_print(msg: str):
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
-default_origins = [
-    "https://saarthai.lovable.app",
-    "http://localhost:3000",
+allow_origins = [
+    "https://saarthh.in",
+    "https://www.saarthh.in",
     "http://localhost:5173",
-    "http://localhost:8080",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
+    "http://localhost:3000",
 ]
 env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
-allowed_origins = list(dict.fromkeys(default_origins + env_origins))
+allowed_origins = list(dict.fromkeys(allow_origins + env_origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"^https://.*\.lovable\.app$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
+COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", ".saarthh.in")
+
+
+def _set_refresh_token_cookie(response: Response, refresh_token: str):
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="None",
+        domain=COOKIE_DOMAIN,
+        max_age=30 * 24 * 60 * 60,
+        path="/",
+    )
+
+
+def _delete_refresh_token_cookie(response: Response):
+    response.delete_cookie(
+        key="refresh_token",
+        domain=COOKIE_DOMAIN,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="None",
+    )
+    response.delete_cookie(
+        key="refresh_token",
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="None",
+    )
 
 
 # ---------- Request / Response Models ----------
@@ -522,16 +552,8 @@ def signup(req: AuthRequest, response: Response):
         update_user_last_login(user["id"])
         token = create_access_token(user["id"], user["email"])
         refresh_token = create_refresh_token(user["id"], user["email"])
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            path="/",
-        )
-        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
+        _set_refresh_token_cookie(response, refresh_token)
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
         if req.username and req.username.strip():
             try:
                 set_username(user["id"], req.username.strip())
@@ -607,16 +629,8 @@ def login(req: AuthRequest, response: Response):
     token = create_access_token(user["id"], user["email"])
     refresh_token = create_refresh_token(user["id"], user["email"])
 
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-    )
-    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
+    _set_refresh_token_cookie(response, refresh_token)
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
 
@@ -678,16 +692,8 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
     if user.get("bypass_verification") or user.get("email_verified"):
         token = create_access_token(user["id"], user["email"])
         refresh_token = create_refresh_token(user["id"], user["email"])
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            path="/",
-        )
-        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
+        _set_refresh_token_cookie(response, refresh_token)
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
         user_display = get_user_display(user["id"])
         return {
             "status": "ok",
@@ -719,16 +725,8 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
     token = create_access_token(user["id"], user["email"])
     refresh_token = create_refresh_token(user["id"], user["email"])
 
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-    )
-    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
+    _set_refresh_token_cookie(response, refresh_token)
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
@@ -797,16 +795,8 @@ def refresh_token_endpoint(
     new_access_token = create_access_token(user["id"], user["email"])
     new_refresh_token = create_refresh_token(user["id"], user["email"])
 
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-    )
-    _safe_print(f"🍪 [REFRESH] Rotated refresh_token cookie for user {user['id']} (SameSite=None, Secure=True)")
+    _set_refresh_token_cookie(response, new_refresh_token)
+    _safe_print(f"🍪 [REFRESH] Rotated refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
@@ -829,13 +819,7 @@ def refresh_token_endpoint(
 @app.post("/api/logout")
 def logout_endpoint(response: Response):
     """Clear refresh token cookie."""
-    response.delete_cookie(
-        key="refresh_token",
-        path="/",
-        httponly=True,
-        secure=True,
-        samesite="none",
-    )
+    _delete_refresh_token_cookie(response)
     return {"status": "ok", "message": "Logged out successfully"}
 
 
@@ -846,7 +830,8 @@ def debug_cookies(request: Request):
     client_origin = request.headers.get("origin", "")
     is_allowed = (
         client_origin in allowed_origins
-        or bool(re.match(r"^https://.*\.lovable\.app$", client_origin))
+        or client_origin.endswith(".saarthh.in")
+        or client_origin == "https://saarthh.in"
     )
     return {
         "cookies_received": dict(request.cookies),
@@ -856,11 +841,12 @@ def debug_cookies(request: Request):
         "configured_allowed_origins": allowed_origins,
         "cors_allow_credentials": True,
         "cookie_settings": {
-            "samesite": "none",
+            "samesite": "None",
             "secure": True,
             "httponly": True,
             "path": "/",
-            "domain": None,
+            "domain": COOKIE_DOMAIN,
+            "max_age": 30 * 24 * 60 * 60,
         },
         "request_headers": {
             k: v for k, v in request.headers.items()

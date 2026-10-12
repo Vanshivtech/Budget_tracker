@@ -21,7 +21,7 @@ from app.email import validate_email_address, DISPOSABLE_EMAIL_DOMAINS
 
 @pytest.fixture(scope="module")
 def client():
-    return TestClient(app)
+    return TestClient(app, base_url="https://api.saarthh.in")
 
 
 # =====================================================================
@@ -277,3 +277,32 @@ class TestPersistentLoginRefreshToken:
         client.cookies.set("refresh_token", "invalid.garbage.jwt")
         res_bad_cookie = client.post("/auth/refresh")
         assert res_bad_cookie.status_code == 401
+
+    def test_cors_and_cookie_domain_configuration(self, client):
+        """Test CORS headers and refresh_token cookie attributes for saarthh.in domain."""
+        origins = [
+            "https://saarthh.in",
+            "https://www.saarthh.in",
+            "http://localhost:5173",
+            "http://localhost:3000",
+        ]
+        for origin in origins:
+            res = client.options(
+                "/api/app-status",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert res.headers.get("access-control-allow-origin") == origin
+            assert res.headers.get("access-control-allow-credentials") == "true"
+
+        # Verify debug endpoint reports domain and allowed origins
+        debug_res = client.get("/api/debug/cookies", headers={"Origin": "https://saarthh.in"})
+        assert debug_res.status_code == 200
+        data = debug_res.json()
+        assert data["is_origin_allowed"] is True
+        assert data["cookie_settings"]["domain"] == ".saarthh.in"
+        assert data["cookie_settings"]["samesite"].lower() == "none"
+        assert data["cookie_settings"]["secure"] is True
+        assert "https://saarthh.in" in data["configured_allowed_origins"]

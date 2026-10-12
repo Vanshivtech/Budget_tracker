@@ -41,7 +41,7 @@ from app.push import send_push_to_user
 
 @pytest.fixture(scope="module")
 def client():
-    return TestClient(app)
+    return TestClient(app, base_url="https://api.saarthh.in")
 
 
 @pytest.fixture

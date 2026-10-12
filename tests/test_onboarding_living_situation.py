@@ -22,7 +22,7 @@ from app.auth import create_access_token
 
 @pytest.fixture(scope="module")
 def client():
-    return TestClient(app)
+    return TestClient(app, base_url="https://api.saarthh.in")
 
 
 @pytest.fixture(scope="module")
