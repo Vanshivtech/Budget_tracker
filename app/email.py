@@ -103,7 +103,7 @@ def send_otp_email(to_email: str, otp: str):
 
     try:
         response = resend.Emails.send({
-            "from": "SAARTH <onboarding@resend.dev>",
+            "from": "SAARTH <noreply@saarthh.in>",
             "to": [to_email],
             "subject": "Your SAARTH verification code",
             "html": f"""
