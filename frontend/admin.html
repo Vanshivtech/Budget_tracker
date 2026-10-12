@@ -979,8 +979,13 @@
       const btnLogout = document.getElementById('btn-admin-logout');
       const navEmail = document.getElementById('nav-admin-email');
 
+      const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? ''
+        : 'https://api.saarthh.in';
+
       // Helper: Admin API fetch wrapper
       async function adminApi(endpoint, options = {}) {
+        const fullUrl = endpoint.startsWith('http') ? endpoint : (API_BASE + endpoint);
         const headers = {
           'Content-Type': 'application/json',
           ...(options.headers || {}),
@@ -988,7 +993,7 @@
         if (adminToken) {
           headers['Authorization'] = 'Bearer ' + adminToken;
         }
-        const res = await fetch(endpoint, { ...options, headers });
+        const res = await fetch(fullUrl, { ...options, headers, credentials: 'include' });
         if (res.status === 401) {
           // Token expired or invalid
           doAdminLogout();
@@ -1018,6 +1023,7 @@
         adminEmail = '';
         localStorage.removeItem('abt_admin_token');
         localStorage.removeItem('abt_admin_email');
+        fetch(API_BASE + '/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
         showLogin();
       }
 
@@ -1034,9 +1040,10 @@
         btn.disabled = true;
         btn.textContent = 'Verifying credentials...';
         try {
-          const res = await fetch('/api/admin/login', {
+          const res = await fetch(API_BASE + '/api/admin/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ email, password }),
           });
           const data = await res.json().catch(() => ({}));

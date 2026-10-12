@@ -116,6 +116,9 @@ def send_otp_email(to_email: str, otp: str):
                           padding: 16px 0;">{otp}</div>
               <p style="color: #666;">Valid for 10 minutes. 
                  Do not share this code with anyone.</p>
+              <div style="margin: 24px 0 16px 0;">
+                <a href="https://saarthh.in" style="background-color: #22c55e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Visit SAARTH</a>
+              </div>
               <hr style="border: none; border-top: 1px solid #eee;">
               <p style="color: #999; font-size: 12px;">
                 <a href="https://saarthh.in" style="color: #22c55e; text-decoration: none; font-weight: bold;">SAARTH</a> — Know what you can safely spend today.
@@ -127,3 +130,42 @@ def send_otp_email(to_email: str, otp: str):
     except Exception as e:
         print(f"Resend email error: {e}")
         raise e
+
+
+def send_admin_alert_email(subject: str, message: str, to_email: str | None = None) -> bool:
+    """Send administrative alert email with 'Visit SAARTH' button pointing to https://saarthh.in."""
+    target = to_email or os.environ.get("ADMIN_EMAIL") or getattr(settings, "ADMIN_EMAIL", "")
+    if not target:
+        return False
+
+    key = os.environ.get("RESEND_API_KEY") or getattr(settings, "RESEND_API_KEY", "")
+    if key:
+        resend.api_key = key
+
+    if not resend.api_key or resend.api_key.startswith("re_test") or resend.api_key == "re_xxxxxxxxxxxx":
+        print(f"[Resend NOTICE] Admin alert for {target}: {subject}")
+        return True
+
+    try:
+        resend.Emails.send({
+            "from": "SAARTH Admin <onboarding@resend.dev>",
+            "to": [target],
+            "subject": subject,
+            "html": f"""
+            <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px;">
+              <h2 style="color: #111827; margin-top: 0;">SAARTH Admin Notification</h2>
+              <p style="color: #374151; font-size: 15px; line-height: 1.5;">{message}</p>
+              <div style="margin: 28px 0;">
+                <a href="https://saarthh.in" style="background-color: #22c55e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Visit SAARTH</a>
+              </div>
+              <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
+              <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                Portal: <a href="https://saarthh.in/admin" style="color: #22c55e; text-decoration: none;">saarthh.in/admin</a> | API: api.saarthh.in
+              </p>
+            </div>
+            """
+        })
+        return True
+    except Exception as e:
+        print(f"Resend admin email error: {e}")
+        return False

@@ -169,10 +169,20 @@ def _safe_print(msg: str):
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+ADMIN_ALLOWED_ORIGINS = [
+    "https://saarthh.in",
+    "https://www.saarthh.in",
+    "https://api.saarthh.in",
+    "http://localhost:5173",
+    "http://localhost:8000",
+]
+
 allow_origins = [
     "https://saarthh.in",
     "https://www.saarthh.in",
+    "https://api.saarthh.in",
     "http://localhost:5173",
+    "http://localhost:8000",
     "http://localhost:3000",
 ]
 env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
@@ -2487,7 +2497,7 @@ def app_status():
 # ---------- Admin API Endpoints ----------
 
 @app.post("/api/admin/login")
-def admin_login(req: AdminLoginRequest):
+def admin_login(req: AdminLoginRequest, response: Response, request: Request):
     """Authenticate admin user using environment-configured credentials."""
     email_clean = req.email.strip().lower()
     admin_email_clean = settings.ADMIN_EMAIL.strip().lower()
@@ -2497,7 +2507,47 @@ def admin_login(req: AdminLoginRequest):
             detail="Invalid admin credentials",
         )
     token = create_admin_token(settings.ADMIN_EMAIL)
+
+    # Admin session cookie
+    response.set_cookie(
+        key="admin_token",
+        value=token,
+        domain=".saarthh.in",
+        secure=True,
+        samesite="None",
+        httponly=True,
+        max_age=30 * 24 * 60 * 60,
+        path="/",
+    )
+
+    # Set explicit CORS response headers for admin login
+    origin = request.headers.get("origin")
+    if origin and (origin in ADMIN_ALLOWED_ORIGINS or origin in allowed_origins):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
     return {"token": token, "email": settings.ADMIN_EMAIL, "role": "admin"}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response):
+    """Clear admin session cookie."""
+    response.delete_cookie(
+        key="admin_token",
+        domain=".saarthh.in",
+        path="/",
+        secure=True,
+        samesite="None",
+        httponly=True,
+    )
+    response.delete_cookie(
+        key="admin_token",
+        path="/",
+        secure=True,
+        samesite="None",
+        httponly=True,
+    )
+    return {"status": "ok", "message": "Admin logged out successfully"}
 
 
 @app.get("/api/admin/dashboard")

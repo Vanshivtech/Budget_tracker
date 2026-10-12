@@ -78,6 +78,10 @@
 
   // ---------- Helpers ----------
 
+  const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? ''
+    : 'https://api.saarthh.in';
+
   function api(path, options = {}) {
     const isFormData = options.body instanceof FormData;
     const headers = { ...(options.headers || {}) };
@@ -85,7 +89,8 @@
       headers['Content-Type'] = 'application/json';
     }
     if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
-    return fetch(path, { ...options, headers }).then(async (res) => {
+    const fullPath = path.startsWith('http') ? path : (API_BASE + path);
+    return fetch(fullPath, { ...options, headers, credentials: 'include' }).then(async (res) => {
       if (res.status === 401) {
         doLogout();
         throw new Error('Session expired');
@@ -2306,10 +2311,12 @@
       exportDownloadBtn.innerHTML = 'Generating...';
 
       try {
-        const res = await fetch(`/api/export/monthly?month=${encodeURIComponent(month)}&format=${format}`, {
+        const exportUrl = (API_BASE ? API_BASE : '') + `/api/export/monthly?month=${encodeURIComponent(month)}&format=${format}`;
+        const res = await fetch(exportUrl, {
           headers: {
             'Authorization': 'Bearer ' + authToken,
           },
+          credentials: 'include',
         });
 
         if (!res.ok) {
@@ -2884,11 +2891,12 @@
       addBillUpload.textContent = 'Uploading...';
 
       try {
-        const res = await fetch('/api/receipts/upload', {
+        const res = await fetch((API_BASE ? API_BASE : '') + '/api/receipts/upload', {
           method: 'POST',
           headers: {
             'Authorization': 'Bearer ' + authToken,
           },
+          credentials: 'include',
           body: formData,
         });
 
@@ -3088,9 +3096,10 @@
         const headers = { 'Authorization': 'Bearer ' + authToken };
         if (!isForm) headers['Content-Type'] = 'application/json';
 
-        const res = await fetch('/api/import/preview', {
+        const res = await fetch((API_BASE ? API_BASE : '') + '/api/import/preview', {
           method: 'POST',
           headers,
+          credentials: 'include',
           body: payload,
         });
 
@@ -5701,8 +5710,9 @@
     settingsExportJson.addEventListener('click', async () => {
       settingsExportJson.disabled = true;
       try {
-        const res = await fetch('/api/data/export-all', {
+        const res = await fetch((API_BASE ? API_BASE : '') + '/api/data/export-all', {
           headers: { 'Authorization': 'Bearer ' + authToken },
+          credentials: 'include',
         });
         if (!res.ok) throw new Error('Export failed');
         const blob = await res.blob();

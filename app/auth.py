@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.config import settings
@@ -163,15 +163,24 @@ def decode_admin_token(token: str) -> dict:
         )
 
 
-def get_current_admin(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> dict:
-    """FastAPI dependency to extract and verify admin authorization from Bearer token."""
-    if not credentials:
+def get_current_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """FastAPI dependency to extract and verify admin authorization from Bearer token or admin_token cookie."""
+    token = None
+    if credentials:
+        token = credentials.credentials
+    elif request and request.cookies.get("admin_token"):
+        token = request.cookies.get("admin_token")
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin authentication token required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_admin_token(credentials.credentials)
+    payload = decode_admin_token(token)
     return {
         "email": payload.get("email", settings.ADMIN_EMAIL),
         "role": "admin",

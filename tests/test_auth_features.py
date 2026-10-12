@@ -306,3 +306,84 @@ class TestPersistentLoginRefreshToken:
         assert data["cookie_settings"]["samesite"].lower() == "none"
         assert data["cookie_settings"]["secure"] is True
         assert "https://saarthh.in" in data["configured_allowed_origins"]
+
+
+class TestAdminPortalDomainUpdates:
+    """Test admin portal domain updates for saarthh.in and api.saarthh.in."""
+
+    def test_admin_allowed_origins(self):
+        from app.main import ADMIN_ALLOWED_ORIGINS
+        expected = [
+            "https://saarthh.in",
+            "https://www.saarthh.in",
+            "https://api.saarthh.in",
+            "http://localhost:5173",
+            "http://localhost:8000",
+        ]
+        for origin in expected:
+            assert origin in ADMIN_ALLOWED_ORIGINS, f"{origin} must be in ADMIN_ALLOWED_ORIGINS"
+
+    def test_admin_login_cors_and_cookie(self, client):
+        from app.config import settings
+        import bcrypt
+
+        # Ensure valid admin credentials for test
+        raw_pw = "AdminPass123!"
+        settings.ADMIN_PASSWORD_HASH = bcrypt.hashpw(raw_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        settings.ADMIN_EMAIL = "admin@saarthh.in"
+
+        origins = [
+            "https://saarthh.in",
+            "https://www.saarthh.in",
+            "https://api.saarthh.in",
+            "http://localhost:5173",
+            "http://localhost:8000",
+        ]
+
+        for orig in origins:
+            res = client.post(
+                "/api/admin/login",
+                json={"email": "admin@saarthh.in", "password": raw_pw},
+                headers={"Origin": orig},
+            )
+            assert res.status_code == 200
+            assert res.headers.get("access-control-allow-origin") == orig
+            assert res.headers.get("access-control-allow-credentials") == "true"
+
+            # Check admin_token cookie settings
+            set_cookie = res.headers.get("set-cookie", "")
+            assert "admin_token=" in set_cookie
+            assert "Domain=.saarthh.in" in set_cookie
+            assert "HttpOnly" in set_cookie
+            assert "Secure" in set_cookie
+            assert "SameSite=None" in set_cookie
+
+    def test_admin_cookie_authenticates_dashboard(self, client):
+        from app.config import settings
+        import bcrypt
+
+        raw_pw = "AdminPass123!"
+        settings.ADMIN_PASSWORD_HASH = bcrypt.hashpw(raw_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        settings.ADMIN_EMAIL = "admin@saarthh.in"
+
+        # Login to receive cookie
+        login_res = client.post(
+            "/api/admin/login",
+            json={"email": "admin@saarthh.in", "password": raw_pw},
+        )
+        assert login_res.status_code == 200
+        admin_token_cookie = login_res.cookies.get("admin_token")
+        assert admin_token_cookie is not None
+
+        # Call dashboard with cookie (no Authorization header)
+        client.cookies.set("admin_token", admin_token_cookie)
+        dash_res = client.get("/api/admin/dashboard")
+        assert dash_res.status_code == 200
+        assert "stats" in dash_res.json()
+
+        # Logout clears cookie
+        logout_res = client.post("/api/admin/logout")
+        assert logout_res.status_code == 200
+        cookie_header = logout_res.headers.get("set-cookie", "")
+        assert "admin_token=" in cookie_header
+        assert "Max-Age=0" in cookie_header or "expires=" in cookie_header.lower()
