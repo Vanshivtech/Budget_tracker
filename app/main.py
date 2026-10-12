@@ -177,24 +177,51 @@ ADMIN_ALLOWED_ORIGINS = [
     "http://localhost:8000",
 ]
 
-allow_origins = [
+default_origins = [
+    "https://saarthai.lovable.app",
     "https://saarthh.in",
     "https://www.saarthh.in",
     "https://api.saarthh.in",
+    "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8000",
-    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
 ]
-env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
-allowed_origins = list(dict.fromkeys(allow_origins + env_origins))
+
+env_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+allowed_origins = list(dict.fromkeys(default_origins + env_origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https://.*\.lovable\.(app|dev)$|^https://.*\.lovableproject\.com$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "*"],
 )
+
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Explicit preflight handler ensuring preflight checks return 200 OK."""
+    return {"ok": True}
+
+
+@app.get("/api/ping")
+def ping():
+    """Connectivity test endpoint (public, no auth)."""
+    return {
+        "ok": True,
+        "service": "SAARTH",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", ".saarthh.in")
 
@@ -842,6 +869,7 @@ def debug_cookies(request: Request):
         client_origin in allowed_origins
         or client_origin.endswith(".saarthh.in")
         or client_origin == "https://saarthh.in"
+        or bool(re.match(r"^https://.*\.lovable\.(app|dev)$|^https://.*\.lovableproject\.com$", client_origin))
     )
     return {
         "cookies_received": dict(request.cookies),

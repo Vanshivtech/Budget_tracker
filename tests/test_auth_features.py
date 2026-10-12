@@ -387,3 +387,86 @@ class TestAdminPortalDomainUpdates:
         cookie_header = logout_res.headers.get("set-cookie", "")
         assert "admin_token=" in cookie_header
         assert "Max-Age=0" in cookie_header or "expires=" in cookie_header.lower()
+
+
+class TestLovableCorsAndPreflightConnectivity:
+    """Test CORS, preflight OPTIONS, connectivity /api/ping, and unauthenticated signup/login from Lovable."""
+
+    def test_lovable_in_allow_origins(self):
+        from app.main import allowed_origins
+        assert "https://saarthai.lovable.app" in allowed_origins
+
+    def test_ping_connectivity_endpoint(self, client):
+        res = client.get("/api/ping", headers={"Origin": "https://saarthai.lovable.app"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ok"] is True
+        assert data["service"] == "SAARTH"
+        assert "timestamp" in data
+        assert res.headers.get("access-control-allow-origin") == "https://saarthai.lovable.app"
+        assert res.headers.get("access-control-allow-credentials") == "true"
+
+    def test_health_endpoint_cors(self, client):
+        res = client.get("/api/health", headers={"Origin": "https://saarthai.lovable.app"})
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok"}
+        assert res.headers.get("access-control-allow-origin") == "https://saarthai.lovable.app"
+
+    def test_options_preflight_handler(self, client):
+        routes_to_test = [
+            "/api/signup",
+            "/api/login",
+            "/api/ping",
+            "/api/expenses",
+            "/api/transactions",
+            "/some/arbitrary/path",
+        ]
+        for route in routes_to_test:
+            # Preflight with CORS headers
+            res = client.options(
+                route,
+                headers={
+                    "Origin": "https://saarthai.lovable.app",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Content-Type, Authorization, Accept",
+                },
+            )
+            assert res.status_code == 200
+            assert res.headers.get("access-control-allow-origin") == "https://saarthai.lovable.app"
+            assert res.headers.get("access-control-allow-credentials") == "true"
+            allow_headers = res.headers.get("access-control-allow-headers", "").lower()
+            assert "content-type" in allow_headers
+
+    def test_signup_has_no_auth_dependency(self, client):
+        """Ensure POST /api/signup works without any auth token from https://saarthai.lovable.app."""
+        email = f"lovable_test_{secrets.token_hex(4)}@gmail.com"
+        res = client.post(
+            "/api/signup",
+            headers={"Origin": "https://saarthai.lovable.app"},
+            json={
+                "email": email,
+                "password": "ValidPassword123!",
+                "username": "LovableUser",
+            },
+        )
+        # Should reach the handler and return 200 (OTP sent) with CORS headers
+        assert res.status_code == 200
+        data = res.json()
+        assert data.get("requires_verification") is True
+        assert res.headers.get("access-control-allow-origin") == "https://saarthai.lovable.app"
+        assert res.headers.get("access-control-allow-credentials") == "true"
+
+    def test_login_has_no_auth_dependency(self, client):
+        """Ensure POST /api/login works without any auth token from https://saarthai.lovable.app."""
+        res = client.post(
+            "/api/login",
+            headers={"Origin": "https://saarthai.lovable.app"},
+            json={
+                "email": "nonexistent@gmail.com",
+                "password": "Password123!",
+            },
+        )
+        # Should return 401 Invalid email or password, NOT 403 Forbidden / Not Authenticated
+        assert res.status_code == 401
+        assert res.json().get("detail") == "Invalid email or password."
+        assert res.headers.get("access-control-allow-origin") == "https://saarthai.lovable.app"

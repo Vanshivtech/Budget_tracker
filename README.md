@@ -84,7 +84,11 @@ JWT_SECRET=your_generated_32_byte_hex_secret
 ADMIN_EMAIL=admin@budgettracker.local
 ADMIN_PASSWORD_HASH=your_bcrypt_hash_of_admin_password
 ADMIN_TOKEN_SECRET=your_generated_32_byte_admin_hex_secret
+ALLOWED_ORIGINS=https://saarthai.lovable.app,http://localhost:3000
 ```
+
+> **Note on CORS (`ALLOWED_ORIGINS`):** Multiple origins are comma-separated. The Lovable domain (`https://saarthai.lovable.app`) must be included for the frontend to work.
+
 
 Generate secrets with Python:
 ```bash
