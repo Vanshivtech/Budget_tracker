@@ -1,5 +1,4 @@
-﻿$yaml = @'
-name: Build & Release Android APK
+﻿name: Build & Release Android APK
 
 on:
   push:
@@ -130,6 +129,3 @@ jobs:
               \"is_forced\": false,
               \"platform\": \"android\"
             }" || echo "Notice: Backend version update failed."
-'@
-
-Set-Content ".github\workflows\build-android.yml" $yaml -Encoding UTF8
