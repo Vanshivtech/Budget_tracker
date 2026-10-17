@@ -141,10 +141,10 @@ async def lifespan(app: FastAPI):
 
     # Startup check: Ensure Android app version points to GitHub release
     try:
-        github_release_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk"
+        github_release_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk"
         v = get_app_version("android")
-        curr_url = (v.get("download_url") or "").strip()
-        if not curr_url or "saarth-v1.0.0.apk" in curr_url or ("releases/latest" not in curr_url and v.get("version") == "1.0.0"):
+        curr_url = (v.get("download_url") or "").strip() if isinstance(v, dict) else ""
+        if not curr_url or "saarth-v1.0.0.apk" in curr_url or curr_url != github_release_apk:
             set_app_version(
                 platform="android",
                 version="1.0.0",
@@ -2898,7 +2898,7 @@ def serve_download():
 @app.get("/download/latest")
 def download_latest_apk():
     """Directly redirect to the latest Android APK download URL."""
-    fallback_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk"
+    fallback_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk"
     try:
         ver_info = get_app_version("android")
         download_url = ver_info.get("download_url") if isinstance(ver_info, dict) else None

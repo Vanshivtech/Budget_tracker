@@ -5254,7 +5254,7 @@ def get_app_version(platform: str = "android") -> dict:
     plat = (platform or "android").strip().lower()
     default_version = {
         "version": "1.0.0",
-        "download_url": "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk",
+        "download_url": "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk",
         "changelog": "First release of SAARTH for Android",
         "is_forced": False,
         "platform": plat,
