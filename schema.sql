@@ -33,3 +33,27 @@ CREATE TABLE IF NOT EXISTS budgets (
 -- Indexes for fast queries
 CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON transactions(user_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_budgets_user ON budgets(user_id);
+
+-- 4. App Versions Table
+CREATE TABLE IF NOT EXISTS app_versions (
+  id SERIAL PRIMARY KEY,
+  platform VARCHAR(20) DEFAULT 'android',
+  version VARCHAR(20) NOT NULL,
+  download_url TEXT NOT NULL,
+  changelog TEXT,
+  is_forced BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Insert first version
+INSERT INTO app_versions 
+(platform, version, download_url, changelog, is_forced)
+VALUES (
+  'android',
+  '1.0.0',
+  'https://saarthh.in/download/saarth-v1.0.0.apk',
+  'First release of SAARTH!',
+  false
+)
+ON CONFLICT DO NOTHING;
+

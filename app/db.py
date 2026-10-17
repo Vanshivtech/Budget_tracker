@@ -375,7 +375,25 @@ def init_db() -> None:
             CREATE VIEW goals AS
             SELECT id, user_id, name, target_amount, saved_amount AS current_amount, target_date, created_at
             FROM savings_goals;
+
+            CREATE TABLE IF NOT EXISTS app_versions (
+                id SERIAL PRIMARY KEY,
+                platform VARCHAR(20) DEFAULT 'android',
+                version VARCHAR(20) NOT NULL,
+                download_url TEXT NOT NULL,
+                changelog TEXT,
+                is_forced BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_app_versions_platform_id ON app_versions(platform, id DESC);
         """)
+
+        cur.execute("SELECT id FROM app_versions WHERE platform = 'android' LIMIT 1;")
+        if not cur.fetchone():
+            cur.execute("""
+                INSERT INTO app_versions (platform, version, download_url, changelog, is_forced)
+                VALUES ('android', '1.0.0', 'https://saarthh.in/download/saarth-v1.0.0.apk', 'First release of SAARTH!', false);
+            """)
 
 
 # ---------- Users ----------
@@ -5142,6 +5160,7 @@ ADMIN_EXPLORER_TABLES = [
     "recurring_expenses",
     "savings_goals",
     "receipts",
+    "app_versions",
 ]
 
 
@@ -5227,5 +5246,73 @@ def get_admin_table_rows(
         "columns": columns,
         "rows": clean_rows,
     }
+
+
+def get_latest_app_version(platform: str = "android") -> dict:
+    """Fetch the latest published app version for a given platform (defaults to android)."""
+    plat = (platform or "android").strip().lower()
+    default_version = {
+        "version": "1.0.0",
+        "download_url": "https://saarthh.in/download/saarth-v1.0.0.apk",
+        "changelog": "First release of SAARTH!",
+        "is_forced": False,
+        "platform": plat,
+    }
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT version, download_url, changelog, is_forced, platform
+                FROM app_versions
+                WHERE LOWER(platform) = %s
+                ORDER BY id DESC
+                LIMIT 1;
+                """,
+                (plat,),
+            )
+            row = cur.fetchone()
+            if row:
+                return {
+                    "version": row["version"],
+                    "download_url": row["download_url"],
+                    "changelog": row["changelog"] or "",
+                    "is_forced": bool(row["is_forced"]),
+                    "platform": row["platform"],
+                }
+    except Exception as e:
+        logger.warning("Error reading app_version from DB, using fallback: %s", e)
+    return default_version
+
+
+def create_app_version(
+    version: str,
+    download_url: str,
+    changelog: str | None = None,
+    is_forced: bool = False,
+    platform: str = "android",
+) -> dict:
+    """Insert a new app version record into the database."""
+    plat = (platform or "android").strip().lower()
+    clean_version = version.strip()
+    clean_url = download_url.strip()
+    clean_log = (changelog or "").strip()
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO app_versions (platform, version, download_url, changelog, is_forced)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING version, download_url, changelog, is_forced, platform;
+            """,
+            (plat, clean_version, clean_url, clean_log, is_forced),
+        )
+        row = cur.fetchone()
+        return {
+            "version": row["version"],
+            "download_url": row["download_url"],
+            "changelog": row["changelog"] or "",
+            "is_forced": bool(row["is_forced"]),
+            "platform": row["platform"],
+        }
+
 
 

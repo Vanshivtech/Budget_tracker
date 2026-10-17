@@ -502,3 +502,41 @@ All five core manual entry and management workflows were visually verified and c
 - **Multi-Currency Conversion:** A single configurable currency symbol (`CURRENCY_SYMBOL`) is supported; live foreign exchange conversions are not supported.
 - **Biometric Authentication (WebAuthn / Passkeys):** Login relies on email and password; biometric device unlock is not implemented.
 - **Optical Character Recognition (OCR) for Receipts:** The OCR function in `app/storage.py` is a placeholder stub; Google Cloud Vision or Tesseract integrations are not connected.
+
+---
+
+### App Version Management API
+
+For Capacitor Android APK distribution and in-app update checks:
+
+#### 1. Public App Version Check
+- **Endpoint:** `GET /api/app/version`
+- **Auth:** None required
+- **Query Params:** `platform` (defaults to `android`)
+- **Response:**
+  ```json
+  {
+    "version": "1.0.0",
+    "download_url": "https://saarthh.in/download/saarth-v1.0.0.apk",
+    "changelog": "First release of SAARTH!",
+    "is_forced": false,
+    "platform": "android"
+  }
+  ```
+
+#### 2. Admin App Version Update
+- **Endpoint:** `POST /api/admin/app/version`
+- **Auth:** Admin Bearer token or `admin_token` cookie required
+- **Payload:**
+  ```json
+  {
+    "version": "1.0.1",
+    "download_url": "https://saarthh.in/download/saarth-v1.0.1.apk",
+    "changelog": "Bug fixes and performance improvements",
+    "is_forced": false,
+    "platform": "android"
+  }
+  ```
+- **Behavior:**
+  - When `is_forced = false`: Optional update banner in the app (dismissible).
+  - When `is_forced = true`: Mandatory update barrier (user cannot dismiss banner and must update to continue).

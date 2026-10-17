@@ -65,6 +65,8 @@ from app.db import (
     update_recurring_expense, delete_recurring_expense, toggle_recurring_expense,
     # Email Verification & OTP
     set_user_otp, verify_user_email, set_user_bypass_verification,
+    # App Version Management
+    get_latest_app_version, create_app_version,
 )
 from app.auth import (
     hash_password, verify_password, create_access_token, create_refresh_token,
@@ -531,6 +533,23 @@ class AdminForceResetRequest(BaseModel):
 
 class AdminDeleteUserRequest(BaseModel):
     confirm_email: str
+
+
+class AppVersionResponse(BaseModel):
+    version: str
+    download_url: str
+    changelog: str | None = ""
+    is_forced: bool = False
+    platform: str = "android"
+
+
+class AppVersionUpdateRequest(BaseModel):
+    version: str
+    download_url: str
+    changelog: str | None = ""
+    is_forced: bool = False
+    platform: str | None = "android"
+
 
 
 # ---------- Auth Routes ----------
@@ -2689,6 +2708,40 @@ def admin_settings_update(settings_dict: dict, admin: dict = Depends(get_current
     for k, v in settings_dict.items():
         set_app_setting(str(k), str(v))
     return {"status": "ok", "settings": get_app_settings(force_refresh=True)}
+
+
+# ---------- App Version Management ----------
+
+@app.get("/api/app/version", response_model=AppVersionResponse)
+def get_app_version(platform: str = "android"):
+    """Get latest published app version configuration (no auth required)."""
+    return get_latest_app_version(platform=platform)
+
+
+@app.get("/api/admin/app/version", response_model=AppVersionResponse)
+def admin_get_app_version(platform: str = "android", admin: dict = Depends(get_current_admin)):
+    """Fetch current app version configuration for admin portal (admin auth required)."""
+    return get_latest_app_version(platform=platform)
+
+
+@app.post("/api/admin/app/version", response_model=AppVersionResponse)
+def admin_update_app_version(
+    req: AppVersionUpdateRequest,
+    admin: dict = Depends(get_current_admin),
+):
+    """Publish a new app version configuration (admin auth required)."""
+    if not req.version or not req.version.strip():
+        raise HTTPException(status_code=400, detail="Version string is required")
+    if not req.download_url or not req.download_url.strip():
+        raise HTTPException(status_code=400, detail="Download URL is required")
+
+    return create_app_version(
+        version=req.version.strip(),
+        download_url=req.download_url.strip(),
+        changelog=req.changelog.strip() if req.changelog else "",
+        is_forced=bool(req.is_forced),
+        platform=req.platform.strip() if req.platform else "android",
+    )
 
 
 # ---------- Global Unhandled Error Handler ----------
