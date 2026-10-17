@@ -1,4 +1,4 @@
-$yaml = @'
+﻿$yaml = @'
 name: Build & Release Android APK
 
 on:
