@@ -74,18 +74,17 @@ jobs:
             echo "HAS_KEYSTORE=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build APK with Gradle
+            - name: Build APK with Gradle
         working-directory: android-app/android
         run: |
           chmod +x gradlew
           if [ "${{ steps.keystore.outputs.HAS_KEYSTORE }}" = "true" ]; then
             ./gradlew assembleRelease \
-              -Pandroid.injected.signing.store.file=saarth.keystore \
+              -Pandroid.injected.signing.store.file=${{ github.workspace }}/android-app/android/app/saarth.keystore \
               -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
               -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
               -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
             
-            # Locate output APK
             RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
             cp "$RELEASE_APK" app/build/outputs/apk/saarth-release.apk
             echo "APK_PATH=android-app/android/app/build/outputs/apk/saarth-release.apk" >> $GITHUB_ENV
