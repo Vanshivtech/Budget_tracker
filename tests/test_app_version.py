@@ -81,11 +81,11 @@ class TestAppVersionEndpoints:
         assert pub_data["download_url"] == "https://saarthh.in/download/saarth-v1.2.0.apk"
         assert pub_data["is_forced"] is True
 
-        # Clean up: restore 1.0.0 as latest
+        # Clean up: restore 1.0.0 as latest pointing to GitHub release
         create_app_version(
             version="1.0.0",
-            download_url="https://saarthh.in/download/saarth-v1.0.0.apk",
-            changelog="First release of SAARTH!",
+            download_url="https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk",
+            changelog="First release of SAARTH for Android",
             is_forced=False,
             platform="android",
         )
@@ -105,6 +105,18 @@ class TestAppVersionEndpoints:
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert res_empty_url.status_code == 400
+
+    def test_download_page_and_latest_redirect(self, client):
+        """Test GET /download returns 200 HTML and GET /download/latest redirects 302."""
+        # 1. Download page
+        res = client.get("/download")
+        assert res.status_code == 200
+        assert "Get SAARTH on Android" in res.text or "download-btn" in res.text
+
+        # 2. Direct latest APK redirect (don't follow redirects to assert 302)
+        res_latest = client.get("/download/latest", follow_redirects=False)
+        assert res_latest.status_code == 302
+        assert "github.com/Vanshivtech/Budget_tracker/releases/latest" in res_latest.headers.get("location", "")
 
     def test_sms_ingest_endpoint(self, client):
         """Test POST /api/sms/ingest requires auth and processes bank SMS."""

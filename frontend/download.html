@@ -242,21 +242,21 @@
       <h1>Get SAARTH on Android</h1>
       <p class="subheadline">Auto-import transactions directly from your bank and UPI SMS.</p>
 
-      <a id="download-btn" href="https://saarthh.in/download/saarth-v1.0.0.apk" class="btn-download" download>
+      <a id="download-btn" href="https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk" class="btn-download" download>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
           <polyline points="7 10 12 15 17 10"></polyline>
           <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
-        Download Android APK
+        <span id="btn-text">Download SAARTH v1.0.0 for Android</span>
       </a>
-      <div id="version-label" class="version-meta">Loading latest version...</div>
+      <div id="version-label" class="version-meta">Version 1.0.0 (Android) &middot; Verified Secure</div>
     </div>
 
     <div class="card">
       <h2><span>📲</span> Installation Instructions</h2>
       <ol class="steps-list">
-        <li>Tap <strong>Download Android APK</strong> above.</li>
+        <li>Tap <strong>Download SAARTH</strong> above.</li>
         <li>Open <strong>Downloads</strong> or pull down your phone notification tray.</li>
         <li>Tap <strong>saarth.apk</strong> to install.</li>
         <li>Allow <strong>"Install unknown apps"</strong> in your browser settings if prompted.</li>
@@ -280,20 +280,49 @@
 
   <script>
     (async function() {
+      const FALLBACK_URL = "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk";
+      const btn = document.getElementById('download-btn');
+      const btnText = document.getElementById('btn-text');
+      const vLabel = document.getElementById('version-label');
+
+      // Ensure button always has a working fallback href immediately
+      if (btn && !btn.href) {
+        btn.href = FALLBACK_URL;
+      }
+
       try {
-        const res = await fetch('/api/app/version?platform=android');
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.download_url) {
-            const btn = document.getElementById('download-btn');
-            const vLabel = document.getElementById('version-label');
-            btn.href = data.download_url;
-            vLabel.textContent = `Version ${data.version || '1.0.0'} (Android) &middot; Verified Secure`;
+        let data = null;
+        try {
+          const res = await fetch('https://api.saarthh.in/api/app/version?platform=android');
+          if (res.ok) {
+            data = await res.json();
           }
+        } catch (apiErr) {
+          // If direct API domain fetch fails (e.g. local dev / preview), try relative endpoint
+          try {
+            const relRes = await fetch('/api/app/version?platform=android');
+            if (relRes.ok) {
+              data = await relRes.json();
+            }
+          } catch (_) {}
+        }
+
+        if (data && data.download_url) {
+          const version = data.version || '1.0.0';
+          const dlUrl = data.download_url.trim() || FALLBACK_URL;
+          if (btn) btn.href = dlUrl;
+          if (btnText) btnText.textContent = `Download SAARTH v${version} for Android`;
+          if (vLabel) vLabel.innerHTML = `Version ${version} (Android) &middot; Verified Secure`;
+          return;
         }
       } catch (err) {
-        document.getElementById('version-label').textContent = 'Version 1.0.0 (Android)';
+        console.warn('API version fetch error, applying fallback:', err);
       }
+
+      // Safe fallback on any error
+      if (btn) btn.href = FALLBACK_URL;
+      if (btnText) btnText.textContent = 'Download SAARTH v1.0.0 for Android';
+      if (vLabel) vLabel.innerHTML = 'Version 1.0.0 (Android) &middot; Verified Secure';
     })();
   </script>
 </body>

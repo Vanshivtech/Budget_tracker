@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
 from app.config import settings
@@ -138,6 +138,23 @@ async def lifespan(app: FastAPI):
         count = clear_all_push_subscriptions()
         print(f"[STARTUP] Cleared {count} stale push subscriptions after VAPID key change")
         set_app_setting("push_subscriptions_cleared_after_vapid_change", "true")
+
+    # Startup check: Ensure Android app version points to GitHub release
+    try:
+        github_release_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk"
+        v = get_app_version("android")
+        curr_url = (v.get("download_url") or "").strip()
+        if not curr_url or "saarth-v1.0.0.apk" in curr_url or ("releases/latest" not in curr_url and v.get("version") == "1.0.0"):
+            set_app_version(
+                platform="android",
+                version="1.0.0",
+                download_url=github_release_apk,
+                changelog="First release of SAARTH for Android",
+                is_forced=False,
+            )
+            print("[STARTUP] Updated Android app version to point to GitHub release.")
+    except Exception as e:
+        logger.warning(f"Error checking initial app version: {e}")
 
     try:
         check_and_process_recurring_reminders()
@@ -2874,8 +2891,22 @@ def serve_download():
     """Serve the Android APK download page."""
     dl_path = FRONTEND_DIR / "download.html"
     if dl_path.exists():
-        return FileResponse(str(dl_path))
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+        return FileResponse(str(dl_path), media_type="text/html")
+    return FileResponse(str(FRONTEND_DIR / "index.html"), media_type="text/html")
+
+
+@app.get("/download/latest")
+def download_latest_apk():
+    """Directly redirect to the latest Android APK download URL."""
+    fallback_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/latest/download/saarth-release.apk"
+    try:
+        ver_info = get_app_version("android")
+        download_url = ver_info.get("download_url") if isinstance(ver_info, dict) else None
+        if download_url and download_url.strip() and "saarth-v1.0.0.apk" not in download_url:
+            return RedirectResponse(url=download_url.strip(), status_code=302)
+    except Exception as e:
+        logger.warning(f"Error resolving latest APK download URL: {e}")
+    return RedirectResponse(url=fallback_apk, status_code=302)
 
 
 @app.get("/")
