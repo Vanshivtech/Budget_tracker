@@ -1,0 +1,136 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'android-app/package.json'
+
+      - name: Install Dependencies
+        working-directory: android-app
+        run: npm install
+
+      - name: Initialize Android Platform
+        working-directory: android-app
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            echo "Android folder already exists, skipping add."
+          fi
+
+      - name: Register SMS Plugin in Android Project
+        working-directory: android-app
+        run: |
+          PLUGIN_DIR="android/app/src/main/java/in/saarthh/app/plugins"
+          mkdir -p "$PLUGIN_DIR"
+          cp sms-plugin/SmsReaderPlugin.java "$PLUGIN_DIR/"
+
+          # Inject permissions into AndroidManifest.xml if not already present
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            if ! grep -q "android.permission.RECEIVE_SMS" "$MANIFEST"; then
+              sed -i '/<manifest/a \    <uses-permission android:name="android.permission.RECEIVE_SMS" />\n    <uses-permission android:name="android.permission.READ_SMS" />' "$MANIFEST"
+            fi
+          fi
+
+      - name: Sync Capacitor
+        working-directory: android-app
+        run: npx cap sync android
+
+      - name: Decode Release Keystore
+        id: keystore
+        working-directory: android-app
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/saarth.keystore
+            echo "HAS_KEYSTORE=true" >> $GITHUB_OUTPUT
+          else
+            echo "No KEYSTORE_BASE64 secret provided; fallback to debug build."
+            echo "HAS_KEYSTORE=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build APK with Gradle
+        working-directory: android-app/android
+        run: |
+          chmod +x gradlew
+          if [ "${{ steps.keystore.outputs.HAS_KEYSTORE }}" = "true" ]; then
+            ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file=saarth.keystore \
+              -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+              -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+              -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
+            
+            # Locate output APK
+            RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+            cp "$RELEASE_APK" app/build/outputs/apk/saarth-release.apk
+            echo "APK_PATH=android-app/android/app/build/outputs/apk/saarth-release.apk" >> $GITHUB_ENV
+          else
+            ./gradlew assembleDebug
+            DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+            cp "$DEBUG_APK" app/build/outputs/apk/saarth-debug.apk
+            echo "APK_PATH=android-app/android/app/build/outputs/apk/saarth-debug.apk" >> $GITHUB_ENV
+          fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: saarth-android-apk
+          path: ${{ env.APK_PATH }}
+          retention-days: 30
+
+      - name: Create GitHub Release (On Version Tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.APK_PATH }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update SAARTH Backend Version via Admin API
+        if: startsWith(github.ref, 'refs/tags/v') && env.SAARTH_ADMIN_TOKEN != ''
+        env:
+          SAARTH_ADMIN_TOKEN: ${{ secrets.SAARTH_ADMIN_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          CLEAN_VERSION="${TAG_NAME#v}"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/saarth-release.apk"
+
+          curl -s -X POST https://api.saarthh.in/api/admin/app/version \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${SAARTH_ADMIN_TOKEN}" \
+            -d "{
+              \"version\": \"${CLEAN_VERSION}\",
+              \"download_url\": \"${DOWNLOAD_URL}\",
+              \"changelog\": \"Automated release from tag ${TAG_NAME}\",
+              \"is_forced\": false,
+              \"platform\": \"android\"
+            }" || echo "Notice: Backend version update failed (check server status or token)."

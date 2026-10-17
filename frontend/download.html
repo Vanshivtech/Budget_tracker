@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#6c63ff">
+  <title>Download SAARTH for Android</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --card-bg: #12141c;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #6c63ff;
+      --accent-hover: #584ef2;
+      --accent-glow: rgba(108, 99, 255, 0.35);
+      --emerald: #10b981;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --font: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+      line-height: 1.5;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 580px;
+      margin: 0 auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 32px;
+      text-decoration: none;
+    }
+
+    .brand-logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
+
+    .brand-name {
+      font-size: 26px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: 2px;
+    }
+
+    .hero-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      padding: 36px 28px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+
+    .hero-card::before {
+      content: '';
+      position: absolute;
+      top: -80px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 220px;
+      height: 220px;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--emerald);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 100px;
+      padding: 4px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+      color: #fff;
+    }
+
+    .subheadline {
+      color: var(--muted);
+      font-size: 16px;
+      margin-bottom: 28px;
+    }
+
+    .btn-download {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 17px;
+      padding: 16px 24px;
+      border-radius: 14px;
+      text-decoration: none;
+      box-shadow: 0 6px 24px var(--accent-glow);
+      transition: all 0.2s ease;
+      border: none;
+      cursor: pointer;
+    }
+
+    .btn-download:hover {
+      background: var(--accent-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(108, 99, 255, 0.5);
+    }
+
+    .version-meta {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 12px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card h2 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .steps-list {
+      list-style: none;
+      counter-reset: step-counter;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .steps-list li {
+      counter-increment: step-counter;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 14px;
+      color: #d1d5db;
+    }
+
+    .steps-list li::before {
+      content: counter(step-counter);
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 12px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .pwa-section {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .pwa-section strong {
+      color: #fff;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 24px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <a href="/" class="brand">
+      <img src="/static/icon-192.png" alt="SAARTH" class="brand-logo">
+      <span class="brand-name">SAARTH</span>
+    </a>
+
+    <div class="hero-card">
+      <div class="badge">
+        <span>✨</span> Native Android Release
+      </div>
+      <h1>Get SAARTH on Android</h1>
+      <p class="subheadline">Auto-import transactions directly from your bank and UPI SMS.</p>
+
+      <a id="download-btn" href="https://saarthh.in/download/saarth-v1.0.0.apk" class="btn-download" download>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        Download Android APK
+      </a>
+      <div id="version-label" class="version-meta">Loading latest version...</div>
+    </div>
+
+    <div class="card">
+      <h2><span>📲</span> Installation Instructions</h2>
+      <ol class="steps-list">
+        <li>Tap <strong>Download Android APK</strong> above.</li>
+        <li>Open <strong>Downloads</strong> or pull down your phone notification tray.</li>
+        <li>Tap <strong>saarth.apk</strong> to install.</li>
+        <li>Allow <strong>"Install unknown apps"</strong> in your browser settings if prompted.</li>
+        <li>Tap <strong>Install</strong>, then launch SAARTH!</li>
+      </ol>
+    </div>
+
+    <div class="card pwa-section">
+      <h2><span>🌐</span> Already using SAARTH on Web?</h2>
+      <p style="margin-bottom: 12px;">You can also install SAARTH as a Progressive Web App (PWA):</p>
+      <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 8px;">
+        <li><strong>Android Chrome:</strong> Open <a href="https://saarthh.in" style="color:var(--accent);">saarthh.in</a>, tap menu (⋮) → <em>"Install App"</em> or <em>"Add to Home screen"</em>.</li>
+        <li><strong>iPhone Safari:</strong> Open <a href="https://saarthh.in" style="color:var(--accent);">saarthh.in</a> in Safari, tap the <strong>Share</strong> button (square with arrow) → <em>"Add to Home Screen"</em>.</li>
+      </ul>
+    </div>
+
+    <footer>
+      <p>&copy; 2026 SAARTH &middot; Make money meaningful &middot; <a href="/">Open Web App</a></p>
+    </footer>
+  </div>
+
+  <script>
+    (async function() {
+      try {
+        const res = await fetch('/api/app/version?platform=android');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.download_url) {
+            const btn = document.getElementById('download-btn');
+            const vLabel = document.getElementById('version-label');
+            btn.href = data.download_url;
+            vLabel.textContent = `Version ${data.version || '1.0.0'} (Android) &middot; Verified Secure`;
+          }
+        }
+      } catch (err) {
+        document.getElementById('version-label').textContent = 'Version 1.0.0 (Android)';
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,14 +1,15 @@
 {
   "name": "SAARTH",
-  "short_name": "Saarth",
+  "short_name": "SAARTH",
   "description": "Make money meaningful",
+  "categories": ["finance", "productivity"],
   "start_url": "/",
   "id": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0B0D11",
-  "theme_color": "#10B981",
+  "background_color": "#0a0a0f",
+  "theme_color": "#6c63ff",
   "icons": [
     {
       "src": "/static/icon-192.png",
@@ -33,6 +34,22 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "390x844",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "SAARTH Mobile Dashboard"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "390x844",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "SAARTH Transactions and Budget"
     }
   ]
 }

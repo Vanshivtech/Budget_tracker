@@ -66,7 +66,7 @@ from app.db import (
     # Email Verification & OTP
     set_user_otp, verify_user_email, set_user_bypass_verification,
     # App Version Management
-    get_latest_app_version, create_app_version,
+    get_app_version, set_app_version, get_latest_app_version, create_app_version,
 )
 from app.auth import (
     hash_password, verify_password, create_access_token, create_refresh_token,
@@ -549,6 +549,14 @@ class AppVersionUpdateRequest(BaseModel):
     changelog: str | None = ""
     is_forced: bool = False
     platform: str | None = "android"
+
+
+class SmsIngestPayload(BaseModel):
+    sender: str | None = None
+    body: str | None = None
+    timestamp: Any | None = None
+    batch: list[dict] | None = None
+    sms: list[dict] | None = None
 
 
 
@@ -2713,19 +2721,19 @@ def admin_settings_update(settings_dict: dict, admin: dict = Depends(get_current
 # ---------- App Version Management ----------
 
 @app.get("/api/app/version", response_model=AppVersionResponse)
-def get_app_version(platform: str = "android"):
+def get_app_version_endpoint(platform: str = "android"):
     """Get latest published app version configuration (no auth required)."""
-    return get_latest_app_version(platform=platform)
+    return get_app_version(platform=platform)
 
 
 @app.get("/api/admin/app/version", response_model=AppVersionResponse)
-def admin_get_app_version(platform: str = "android", admin: dict = Depends(get_current_admin)):
+def admin_get_app_version_endpoint(platform: str = "android", admin: dict = Depends(get_current_admin)):
     """Fetch current app version configuration for admin portal (admin auth required)."""
-    return get_latest_app_version(platform=platform)
+    return get_app_version(platform=platform)
 
 
 @app.post("/api/admin/app/version", response_model=AppVersionResponse)
-def admin_update_app_version(
+def admin_update_app_version_endpoint(
     req: AppVersionUpdateRequest,
     admin: dict = Depends(get_current_admin),
 ):
@@ -2735,13 +2743,70 @@ def admin_update_app_version(
     if not req.download_url or not req.download_url.strip():
         raise HTTPException(status_code=400, detail="Download URL is required")
 
-    return create_app_version(
+    return set_app_version(
+        platform=req.platform.strip() if req.platform else "android",
         version=req.version.strip(),
         download_url=req.download_url.strip(),
         changelog=req.changelog.strip() if req.changelog else "",
         is_forced=bool(req.is_forced),
-        platform=req.platform.strip() if req.platform else "android",
     )
+
+
+# ---------- SMS Ingestion (Capacitor Android) ----------
+
+@app.post("/api/sms/ingest")
+async def ingest_sms(
+    payload: SmsIngestPayload,
+    user: dict = Depends(get_current_user),
+):
+    """Ingest bank transaction SMS from Capacitor Android app."""
+    items = []
+    if payload.batch and isinstance(payload.batch, list):
+        items = payload.batch
+    elif payload.sms and isinstance(payload.sms, list):
+        items = payload.sms
+    elif payload.body:
+        items = [{"sender": payload.sender or "", "body": payload.body, "timestamp": payload.timestamp}]
+
+    imported_count = 0
+    duplicate_count = 0
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("body", "").strip()
+        if not body:
+            continue
+        sender = item.get("sender", "").strip()
+        parsed_rows = parse_plain_text_statements(body)
+        for r in parsed_rows:
+            amt = r.get("amount", 0.0)
+            desc = r.get("description", "") or sender
+            is_credit = r.get("is_credit", False)
+            d_str = r.get("date") or date.today().isoformat()
+
+            norm_merchant = normalize_merchant(user["id"], desc) if desc else ""
+            merchant_name = norm_merchant or desc
+
+            if not is_credit and amt > 0:
+                dup = check_duplicate_expense(user["id"], amt, "", merchant_name, d_str)
+                if dup:
+                    duplicate_count += 1
+                    continue
+
+                cat = categorize_by_rule(norm_merchant, desc) or "Other"
+                log_transaction(
+                    user_id=user["id"],
+                    amount=amt,
+                    category=cat,
+                    note=desc[:200],
+                    raw_message=f"SMS from {sender}: {body}"[:500],
+                    merchant=merchant_name,
+                    entry_date=d_str,
+                )
+                imported_count += 1
+
+    return {"status": "ok", "imported": imported_count, "duplicates": duplicate_count}
 
 
 # ---------- Global Unhandled Error Handler ----------
@@ -2792,6 +2857,25 @@ def serve_manifest():
         str(FRONTEND_DIR / "manifest.json"),
         media_type="application/manifest+json"
     )
+
+
+@app.get("/icon-192.png")
+def serve_icon_192():
+    return FileResponse(str(FRONTEND_DIR / "icon-192.png"), media_type="image/png")
+
+
+@app.get("/icon-512.png")
+def serve_icon_512():
+    return FileResponse(str(FRONTEND_DIR / "icon-512.png"), media_type="image/png")
+
+
+@app.get("/download")
+def serve_download():
+    """Serve the Android APK download page."""
+    dl_path = FRONTEND_DIR / "download.html"
+    if dl_path.exists():
+        return FileResponse(str(dl_path))
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 
 @app.get("/")

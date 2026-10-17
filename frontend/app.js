@@ -378,6 +378,19 @@
     loadGlanceData();
     checkMaintenanceStatus();
     switchView('chat');
+
+    // Trigger SMS integration in Capacitor environment
+    if (typeof SmsIntegration !== 'undefined') {
+      SmsIntegration.init();
+      if (!localStorage.getItem('sms_backfill_done')) {
+        SmsIntegration.backfill();
+      }
+    }
+
+    // Trigger in-app version check if in Capacitor
+    if (typeof checkAppUpdate === 'function') {
+      checkAppUpdate();
+    }
   }
 
   window.setAuthSession = function(tok, usr) {
@@ -5896,6 +5909,211 @@
   if (udharReminderCancel) udharReminderCancel.addEventListener('click', () => closeModal('#modal-udhar-reminder'));
 
 
+
+  // ================================================================
+  // PWA Install Prompt Banner
+  // ================================================================
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+
+    const dismissed = localStorage.getItem('pwa_install_dismissed');
+    const sessionDismissed = sessionStorage.getItem('pwa_install_dismissed_session');
+    if (dismissed === 'true' || sessionDismissed === 'true') {
+      return;
+    }
+
+    showPwaInstallBanner();
+  });
+
+  function showPwaInstallBanner() {
+    if (document.getElementById('pwa-install-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'pwa-install-banner';
+    banner.style.cssText = `
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 9999; background: #12141a; border: 1px solid rgba(108, 99, 255, 0.4);
+      border-radius: 12px; padding: 12px 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      display: flex; align-items: center; gap: 14px; max-width: 90vw; color: #fff;
+      font-family: inherit; font-size: 14px;
+    `;
+    banner.innerHTML = `
+      <span>Install SAARTH for a seamless native app experience</span>
+      <div style="display: flex; gap: 8px;">
+        <button id="btn-pwa-install" style="background:#6c63ff;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:600;cursor:pointer;">Install</button>
+        <button id="btn-pwa-dismiss" style="background:transparent;color:#9ca3af;border:none;padding:8px 12px;cursor:pointer;">Not now</button>
+      </div>
+    `;
+    document.body.appendChild(banner);
+
+    document.getElementById('btn-pwa-install')?.addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        try {
+          await deferredPrompt.userChoice;
+        } catch (_) {}
+        deferredPrompt = null;
+      }
+      banner.remove();
+    });
+
+    document.getElementById('btn-pwa-dismiss')?.addEventListener('click', () => {
+      localStorage.setItem('pwa_install_dismissed', 'true');
+      sessionStorage.setItem('pwa_install_dismissed_session', 'true');
+      banner.remove();
+    });
+  }
+
+  // ================================================================
+  // SMS Bridge for Capacitor (Bank & UPI Auto-Ingest)
+  // ================================================================
+  const SmsIntegration = {
+    isCapacitor: () => window.Capacitor !== undefined,
+
+    async init() {
+      if (!this.isCapacitor()) return;
+      try {
+        const plugin = window.Capacitor.Plugins?.SmsReaderPlugin;
+        if (!plugin) return;
+        await plugin.startListening();
+        if (plugin.addListener) {
+          plugin.addListener('smsReceived', async (data) => {
+            try {
+              const res = await api('/api/sms/ingest', {
+                method: 'POST',
+                body: JSON.stringify(data),
+              });
+              if (res && res.imported > 0) {
+                showToast('1 transaction auto-imported from SMS', 'success');
+                if (typeof loadGlanceData === 'function') loadGlanceData();
+              }
+            } catch (err) {
+              console.error('SMS ingest error:', err);
+            }
+          });
+        }
+      } catch (e) {
+        console.error('SmsIntegration init error:', e);
+      }
+    },
+
+    async backfill() {
+      if (!this.isCapacitor()) return;
+      try {
+        const plugin = window.Capacitor.Plugins?.SmsReaderPlugin;
+        if (!plugin) return;
+        const res = await plugin.backfillSms({ days: 90 });
+        const smsList = res?.sms || res || [];
+        if (!Array.isArray(smsList) || smsList.length === 0) {
+          localStorage.setItem('sms_backfill_done', 'true');
+          return;
+        }
+        showToast(`Importing ${smsList.length} transactions from SMS...`, 'info');
+        const result = await api('/api/sms/ingest', {
+          method: 'POST',
+          body: JSON.stringify({ batch: smsList, count: smsList.length }),
+        });
+        const count = result?.imported ?? smsList.length;
+        showToast(`Imported ${count} transactions`, 'success');
+        if (typeof loadGlanceData === 'function') loadGlanceData();
+        localStorage.setItem('sms_backfill_done', 'true');
+      } catch (e) {
+        console.error('SmsIntegration backfill error:', e);
+      }
+    },
+  };
+
+  // ================================================================
+  // In-App Version Update Checker (Capacitor)
+  // ================================================================
+  const APP_VERSION = '1.0.0';
+
+  function isNewerVersion(remote, current) {
+    if (!remote || !current) return false;
+    const rParts = String(remote).split('.').map((n) => parseInt(n, 10) || 0);
+    const cParts = String(current).split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
+      const r = rParts[i] || 0;
+      const c = cParts[i] || 0;
+      if (r > c) return true;
+      if (r < c) return false;
+    }
+    return false;
+  }
+
+  async function checkAppUpdate() {
+    if (window.Capacitor === undefined) return;
+    try {
+      const data = await api('/api/app/version?platform=android');
+      if (!data || !data.version) return;
+
+      if (isNewerVersion(data.version, APP_VERSION)) {
+        if (data.is_forced) {
+          showForcedUpdateModal(data.version, data.download_url, data.changelog);
+        } else {
+          showDismissibleUpdateBanner(data.version, data.download_url);
+        }
+      }
+    } catch (err) {
+      console.warn('checkAppUpdate failed:', err);
+    }
+  }
+
+  function showDismissibleUpdateBanner(version, downloadUrl) {
+    if (document.getElementById('app-update-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'app-update-banner';
+    banner.style.cssText = `
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 10000; background: #12141a; border: 1px solid #6c63ff;
+      border-radius: 12px; padding: 12px 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      display: flex; align-items: center; gap: 14px; max-width: 90vw; color: #fff;
+      font-family: inherit; font-size: 14px;
+    `;
+    banner.innerHTML = `
+      <span>🚀 Update available (v${escapeHtml(version)})</span>
+      <button id="btn-update-download" style="background:#6c63ff;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;">Download</button>
+      <button id="btn-update-dismiss" style="background:transparent;color:#888;border:none;cursor:pointer;font-size:18px;line-height:1;">&times;</button>
+    `;
+    document.body.appendChild(banner);
+
+    document.getElementById('btn-update-download')?.addEventListener('click', () => {
+      window.open(downloadUrl || 'https://saarthh.in/download', '_blank');
+    });
+    document.getElementById('btn-update-dismiss')?.addEventListener('click', () => {
+      banner.remove();
+    });
+  }
+
+  function showForcedUpdateModal(version, downloadUrl, changelog) {
+    if (document.getElementById('forced-update-modal')) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'forced-update-modal';
+    overlay.style.cssText = `
+      position: fixed; inset: 0; z-index: 999999; background: rgba(10, 10, 15, 0.98);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 24px; text-align: center; color: #fff; font-family: inherit;
+    `;
+    overlay.innerHTML = `
+      <div style="max-width: 400px; background: #12141a; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 16px; padding: 32px 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.8);">
+        <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
+        <h2 style="font-size: 22px; margin: 0 0 8px 0; font-weight: 700; color: #f87171;">Update Required</h2>
+        <p style="color: #9ca3af; font-size: 14px; margin: 0 0 16px 0; line-height: 1.5;">
+          A critical security update (v${escapeHtml(version)}) is required to continue using SAARTH.
+        </p>
+        ${changelog ? `<div style="background: #1a1d26; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #d1d5db; text-align: left; margin-bottom: 20px;">${escapeHtml(changelog)}</div>` : ''}
+        <button id="btn-forced-download" style="width: 100%; background: #6c63ff; color: #fff; border: none; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(108, 99, 255, 0.4);">
+          Download Update
+        </button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('btn-forced-download')?.addEventListener('click', () => {
+      window.open(downloadUrl || 'https://saarthh.in/download', '_blank');
+    });
+  }
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});

@@ -21,6 +21,7 @@ import calendar
 import io
 import re
 import time
+import json
 from contextlib import contextmanager
 
 from openpyxl import Workbook
@@ -5248,8 +5249,8 @@ def get_admin_table_rows(
     }
 
 
-def get_latest_app_version(platform: str = "android") -> dict:
-    """Fetch the latest published app version for a given platform (defaults to android)."""
+def get_app_version(platform: str = "android") -> dict:
+    """Read app version configuration from app_settings table (key: app_version_{platform})."""
     plat = (platform or "android").strip().lower()
     default_version = {
         "version": "1.0.0",
@@ -5258,6 +5259,23 @@ def get_latest_app_version(platform: str = "android") -> dict:
         "is_forced": False,
         "platform": plat,
     }
+    key = f"app_version_{plat}"
+    try:
+        val = get_app_setting(key, "")
+        if val:
+            parsed = json.loads(val)
+            if isinstance(parsed, dict) and "version" in parsed:
+                return {
+                    "version": str(parsed.get("version", "1.0.0")),
+                    "download_url": str(parsed.get("download_url", default_version["download_url"])),
+                    "changelog": str(parsed.get("changelog", "")),
+                    "is_forced": bool(parsed.get("is_forced", False)),
+                    "platform": str(parsed.get("platform", plat)),
+                }
+    except Exception as e:
+        logger.warning("Error reading app_version from app_settings: %s", e)
+
+    # Fallback to app_versions table if available
     try:
         with get_db_cursor() as cur:
             cur.execute(
@@ -5280,39 +5298,56 @@ def get_latest_app_version(platform: str = "android") -> dict:
                     "platform": row["platform"],
                 }
     except Exception as e:
-        logger.warning("Error reading app_version from DB, using fallback: %s", e)
+        logger.warning("Error reading app_versions table, using default fallback: %s", e)
+
     return default_version
 
 
-def create_app_version(
+def set_app_version(
+    platform: str,
     version: str,
     download_url: str,
     changelog: str | None = None,
     is_forced: bool = False,
-    platform: str = "android",
 ) -> dict:
-    """Insert a new app version record into the database."""
+    """Upsert app version configuration into app_settings table and app_versions audit table."""
     plat = (platform or "android").strip().lower()
     clean_version = version.strip()
     clean_url = download_url.strip()
     clean_log = (changelog or "").strip()
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO app_versions (platform, version, download_url, changelog, is_forced)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING version, download_url, changelog, is_forced, platform;
-            """,
-            (plat, clean_version, clean_url, clean_log, is_forced),
-        )
-        row = cur.fetchone()
-        return {
-            "version": row["version"],
-            "download_url": row["download_url"],
-            "changelog": row["changelog"] or "",
-            "is_forced": bool(row["is_forced"]),
-            "platform": row["platform"],
-        }
+    data = {
+        "version": clean_version,
+        "download_url": clean_url,
+        "changelog": clean_log,
+        "is_forced": bool(is_forced),
+        "platform": plat,
+    }
+
+    # 1. Upsert into app_settings table
+    set_app_setting(f"app_version_{plat}", json.dumps(data))
+
+    # 2. Also record in app_versions table for audit history
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app_versions (platform, version, download_url, changelog, is_forced)
+                VALUES (%s, %s, %s, %s, %s);
+                """,
+                (plat, clean_version, clean_url, clean_log, bool(is_forced)),
+            )
+    except Exception as e:
+        logger.warning("Error recording into app_versions table: %s", e)
+
+    return data
+
+
+# Backward-compatible aliases
+get_latest_app_version = get_app_version
+create_app_version = lambda version, download_url, changelog=None, is_forced=False, platform="android": set_app_version(
+    platform, version, download_url, changelog, is_forced
+)
+
 
 
 

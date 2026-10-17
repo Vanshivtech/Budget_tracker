@@ -1,0 +1,22 @@
+{
+  "appId": "in.saarthh.app",
+  "appName": "SAARTH",
+  "webDir": "../frontend",
+  "server": {
+    "url": "https://saarthh.in",
+    "cleartext": false
+  },
+  "android": {
+    "buildOptions": {
+      "keystorePath": "saarth.keystore",
+      "keystoreAlias": "saarth"
+    }
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0a0a0f",
+      "showSpinner": false
+    }
+  }
+}

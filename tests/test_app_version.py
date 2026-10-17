@@ -105,3 +105,28 @@ class TestAppVersionEndpoints:
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert res_empty_url.status_code == 400
+
+    def test_sms_ingest_endpoint(self, client):
+        """Test POST /api/sms/ingest requires auth and processes bank SMS."""
+        # Unauthenticated request fails
+        unauth = client.post("/api/sms/ingest", json={"sender": "HDFCBK", "body": "Paid Rs 250 to Starbucks on 16-10-2026"})
+        assert unauth.status_code in (401, 403)
+
+        # Authenticated user request
+        from app.auth import create_access_token
+        user_token = create_access_token(1, "test@saarthh.in")
+        auth_res = client.post(
+            "/api/sms/ingest",
+            json={
+                "sender": "HDFCBK",
+                "body": "Paid Rs 250 to Starbucks on 16-10-2026",
+                "timestamp": 1729080000000,
+            },
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        assert auth_res.status_code == 200
+        data = auth_res.json()
+        assert data["status"] == "ok"
+        assert "imported" in data
+        assert "duplicates" in data
+
