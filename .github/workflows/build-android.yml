@@ -1,3 +1,4 @@
+$yaml = @'
 name: Build & Release Android APK
 
 on:
@@ -49,8 +50,6 @@ jobs:
           PLUGIN_DIR="android/app/src/main/java/in/saarthh/app/plugins"
           mkdir -p "$PLUGIN_DIR"
           cp sms-plugin/SmsReaderPlugin.java "$PLUGIN_DIR/"
-
-          # Inject permissions into AndroidManifest.xml if not already present
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
             if ! grep -q "android.permission.RECEIVE_SMS" "$MANIFEST"; then
@@ -74,7 +73,7 @@ jobs:
             echo "HAS_KEYSTORE=false" >> $GITHUB_OUTPUT
           fi
 
-            - name: Build APK with Gradle
+      - name: Build APK with Gradle
         working-directory: android-app/android
         run: |
           chmod +x gradlew
@@ -84,7 +83,6 @@ jobs:
               -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
               -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
               -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
-            
             RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
             cp "$RELEASE_APK" app/build/outputs/apk/saarth-release.apk
             echo "APK_PATH=android-app/android/app/build/outputs/apk/saarth-release.apk" >> $GITHUB_ENV
@@ -122,7 +120,6 @@ jobs:
         run: |
           CLEAN_VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/saarth-release.apk"
-
           curl -s -X POST https://api.saarthh.in/api/admin/app/version \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${SAARTH_ADMIN_TOKEN}" \
@@ -132,5 +129,7 @@ jobs:
               \"changelog\": \"Automated release from tag ${TAG_NAME}\",
               \"is_forced\": false,
               \"platform\": \"android\"
-            }" || echo "Notice: Backend version update failed (check server status or token)."
+            }" || echo "Notice: Backend version update failed."
+'@
 
+Set-Content ".github\workflows\build-android.yml" $yaml -Encoding UTF8
