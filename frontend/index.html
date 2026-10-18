@@ -20,6 +20,15 @@
         document.documentElement.setAttribute('data-theme', theme);
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', theme === 'light' ? '#F4F6F8' : '#0B0D11');
+
+        // Early Capacitor Native App detection
+        var isCap = window.Capacitor !== undefined && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform();
+        if (isCap) {
+          var token = sessionStorage.getItem('abt_token') || localStorage.getItem('abt_token');
+          if (!token && window.location.pathname === '/' && window.location.hostname.includes('saarthh.in')) {
+            window.location.replace('/login');
+          }
+        }
       } catch (e) {}
     })();
   </script>

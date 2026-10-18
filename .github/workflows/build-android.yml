@@ -1,4 +1,4 @@
-﻿name: Build & Release Android APK
+name: Build & Release Android APK
 
 on:
   push:
@@ -55,6 +55,16 @@ jobs:
               sed -i '/<manifest/a \    <uses-permission android:name="android.permission.RECEIVE_SMS" />\n    <uses-permission android:name="android.permission.READ_SMS" />' "$MANIFEST"
             fi
           fi
+
+      - name: Set up Python for icon generation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow and generate app icons
+        run: |
+          pip install Pillow
+          python scripts/generate_icons.py
 
       - name: Sync Capacitor
         working-directory: android-app

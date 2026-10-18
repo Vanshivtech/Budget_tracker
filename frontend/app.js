@@ -6,6 +6,12 @@
 (function () {
   'use strict';
 
+  // ---------- Capacitor Native Detection ----------
+  const isCapacitorApp = () => {
+    return window.Capacitor !== undefined && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform();
+  };
+  window.isCapacitorApp = isCapacitorApp;
+
   // ---------- State ----------
   let authToken = null;
   let currentUser = null;
@@ -280,6 +286,8 @@
       currentUser = data.user;
       sessionStorage.setItem('abt_token', authToken);
       sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
+      localStorage.setItem('abt_token', authToken);
+      localStorage.setItem('abt_user', JSON.stringify(currentUser));
 
       checkMaintenanceStatus();
 
@@ -310,6 +318,9 @@
     sessionStorage.removeItem('abt_token');
     sessionStorage.removeItem('abt_user');
     sessionStorage.removeItem('abt_onboarding_skipped');
+    localStorage.removeItem('abt_token');
+    localStorage.removeItem('abt_user');
+    localStorage.removeItem('abt_onboarding_skipped');
     const mb = document.getElementById('maintenance-banner');
     if (mb) mb.style.display = 'none';
     hideOnboarding();
@@ -328,11 +339,15 @@
 
   async function tryRestore() {
     checkMaintenanceStatus();
-    const token = sessionStorage.getItem('abt_token');
-    const user = sessionStorage.getItem('abt_user');
+    const token = sessionStorage.getItem('abt_token') || localStorage.getItem('abt_token');
+    const user = sessionStorage.getItem('abt_user') || localStorage.getItem('abt_user');
     if (token && user) {
       authToken = token;
-      currentUser = JSON.parse(user);
+      try {
+        currentUser = JSON.parse(user);
+      } catch (_) {
+        currentUser = null;
+      }
       if (currentUser && currentUser.force_password_reset) {
         showApp();
         switchView('settings');
@@ -341,10 +356,25 @@
           pwdCard.scrollIntoView({ behavior: 'smooth' });
           showChangePwdAlert('Password reset required: Please set a new password before continuing.', 'warning');
         }
-        return;
+        return true;
       }
       await checkOnboardingAndProceed();
+      if (isCapacitorApp()) {
+        switchView('dashboard');
+      }
+      return true;
     }
+
+    if (isCapacitorApp()) {
+      // In Capacitor native app, skip landing page and go directly to login
+      hideOnboarding();
+      if (authScreen) authScreen.style.display = '';
+      if (appScreen) appScreen.classList.remove('active');
+      if (window.location.pathname === '/' && window.location.hostname.includes('saarthh.in')) {
+        window.location.replace('/login');
+      }
+    }
+    return false;
   }
 
   async function checkOnboardingAndProceed() {
@@ -366,6 +396,29 @@
     }
   }
 
+  function showSmsDeniedBanner() {
+    let banner = document.getElementById('sms-permission-denied-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'sms-permission-denied-banner';
+      banner.style.cssText = 'background:rgba(239,68,68,0.15);border-bottom:1px solid rgba(239,68,68,0.3);color:#f87171;padding:10px 16px;text-align:center;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:12px;position:relative;z-index:9999;';
+      banner.innerHTML = `
+        <span>SMS import disabled. Grant permission in Settings to enable.</span>
+        <button type="button" style="background:transparent;border:none;color:#f87171;font-size:16px;cursor:pointer;padding:0 6px;line-height:1;" aria-label="Dismiss">&times;</button>
+      `;
+      const closeBtn = banner.querySelector('button');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+          banner.style.display = 'none';
+        });
+      }
+      const topContainer = document.getElementById('app-screen') || document.body;
+      topContainer.insertBefore(banner, topContainer.firstChild);
+    }
+    banner.style.display = 'flex';
+  }
+  window.onSmsPermissionDenied = showSmsDeniedBanner;
+
   function showApp() {
     authScreen.style.display = 'none';
     hideOnboarding();
@@ -377,7 +430,12 @@
     loadChatHistory();
     loadGlanceData();
     checkMaintenanceStatus();
-    switchView('chat');
+
+    if (isCapacitorApp()) {
+      switchView('dashboard');
+    } else {
+      switchView('chat');
+    }
 
     // Trigger SMS integration in Capacitor environment
     if (typeof SmsIntegration !== 'undefined') {
@@ -5976,7 +6034,10 @@
       try {
         const plugin = window.Capacitor.Plugins?.SmsReaderPlugin;
         if (!plugin) return;
-        await plugin.startListening();
+        const res = await plugin.startListening();
+        if (res && res.status === 'denied') {
+          showSmsDeniedBanner();
+        }
         if (plugin.addListener) {
           plugin.addListener('smsReceived', async (data) => {
             try {
