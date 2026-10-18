@@ -387,6 +387,10 @@ def init_db() -> None:
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_app_versions_platform_id ON app_versions(platform, id DESC);
+
+            ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'web';
+            ALTER TABLE push_subscriptions ALTER COLUMN p256dh DROP NOT NULL;
+            ALTER TABLE push_subscriptions ALTER COLUMN auth DROP NOT NULL;
         """)
 
         cur.execute("SELECT id FROM app_versions WHERE platform = 'android' LIMIT 1;")
@@ -4566,16 +4570,46 @@ def save_push_subscription(
         )
         cur.execute(
             """
-            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, preferences)
-            VALUES (%s, %s, %s, %s, %s::jsonb)
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, type, preferences)
+            VALUES (%s, %s, %s, %s, 'web', %s::jsonb)
             ON CONFLICT (endpoint) DO UPDATE
             SET user_id = EXCLUDED.user_id,
                 p256dh = EXCLUDED.p256dh,
                 auth = EXCLUDED.auth,
+                type = 'web',
                 preferences = EXCLUDED.preferences
-            RETURNING id, user_id, endpoint, preferences, created_at
+            RETURNING id, user_id, endpoint, type, preferences, created_at
             """,
             (user_id, endpoint, p256dh, auth, prefs_json),
+        )
+        row = cur.fetchone()
+        d = dict(row)
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        return d
+
+
+def save_fcm_token(user_id: int, token: str, platform: str = "android") -> dict:
+    """Save or update FCM push token for Android devices.
+    Ensures stale FCM tokens for this user are pruned to avoid duplicate alerts.
+    """
+    with get_db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM push_subscriptions WHERE user_id = %s AND type = 'fcm' AND endpoint != %s",
+            (user_id, token),
+        )
+        cur.execute(
+            """
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, type, preferences)
+            VALUES (%s, %s, '', '', 'fcm', '{"budget_alerts": true, "bill_reminders": true, "weekly_recap": true}'::jsonb)
+            ON CONFLICT (endpoint) DO UPDATE
+            SET user_id = EXCLUDED.user_id,
+                type = 'fcm',
+                p256dh = '',
+                auth = ''
+            RETURNING id, user_id, endpoint, type, preferences, created_at
+            """,
+            (user_id, token),
         )
         row = cur.fetchone()
         d = dict(row)
@@ -4589,7 +4623,7 @@ def get_user_push_subscriptions(user_id: int) -> list[dict]:
     with get_db_cursor() as cur:
         cur.execute(
             """
-            SELECT id, user_id, endpoint, p256dh, auth, preferences, created_at
+            SELECT id, user_id, endpoint, p256dh, auth, type, preferences, created_at
             FROM push_subscriptions
             WHERE user_id = %s
             """,

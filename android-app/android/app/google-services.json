@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1040797448824",
+    "project_id": "saarth-36af1",
+    "storage_bucket": "saarth-36af1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1040797448824:android:c175e6f18c26bcf42f4b8d",
+        "android_client_info": {
+          "package_name": "in.saarthh.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCbVGiIQtmeSWKpxZq5aC4n48xntgtpGPA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

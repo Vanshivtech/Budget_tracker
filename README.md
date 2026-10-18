@@ -238,6 +238,11 @@ SAARTH supports a unified web, progressive web app, and native Android applicati
       "splashImmersive": true
     }
     ```
+- **Firebase Cloud Messaging (FCM for Android Background Push):**
+  - **Service:** [`android-app/android/app/src/main/java/in/saarthh/app/SaarthFirebaseService.java`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/android/app/src/main/java/in/saarthh/app/SaarthFirebaseService.java).
+  - **Channel & Priority:** Dedicated `"saarth_alerts"` notification channel with `NotificationManager.IMPORTANCE_HIGH` and app launcher icon.
+  - **Token Sync Engine:** On new token generation or app login, Android seamlessly delivers the FCM registration token to `POST /api/push/fcm-token` using the user's authenticated JWT session.
+  - **Backend Dual Push Engine:** `app/push.py` dispatches notifications via Firebase Admin SDK (`messaging.send`) for Android devices (`type='fcm'`), while maintaining Web Push (VAPID) for browser and PWA clients. Falls back silently to Web Push if `FIREBASE_SERVICE_ACCOUNT_JSON` is unconfigured.
 
 ### 3. Native Bank & UPI SMS Reader Plugin
 - **Source:** [`android-app/sms-plugin/SmsReaderPlugin.java`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/sms-plugin/SmsReaderPlugin.java) & [`android-app/sms-plugin/index.ts`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/sms-plugin/index.ts)

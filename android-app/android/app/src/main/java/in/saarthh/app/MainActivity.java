@@ -27,7 +27,34 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(in.saarthh.app.plugins.SmsReaderPlugin.class);
         super.onCreate(savedInstanceState);
 
+        SaarthFirebaseService.createNotificationChannel(this);
         checkFirstLaunchPermissions();
+
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().addJavascriptInterface(new AndroidAuthInterface(), "AndroidAuth");
+        }
+        SaarthFirebaseService.syncTokenWithServer(this);
+    }
+
+    public class AndroidAuthInterface {
+        @android.webkit.JavascriptInterface
+        public void setAuthToken(String token) {
+            if (token != null && !token.trim().isEmpty()) {
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(SaarthFirebaseService.KEY_AUTH_TOKEN, token.trim())
+                    .apply();
+                SaarthFirebaseService.syncTokenWithServer(MainActivity.this);
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        public void clearAuthToken() {
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(SaarthFirebaseService.KEY_AUTH_TOKEN)
+                .apply();
+        }
     }
 
     private void checkFirstLaunchPermissions() {

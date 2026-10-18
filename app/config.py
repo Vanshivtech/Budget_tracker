@@ -42,6 +42,9 @@ class Settings:
     ).strip().strip('"\'')
     VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:admin@budgettracker.local").strip().strip('"\'')
 
+    # --- Firebase Cloud Messaging (FCM for Android) ---
+    FIREBASE_SERVICE_ACCOUNT_JSON: str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+
     # --- Display ---
     CURRENCY_SYMBOL: str = os.getenv("CURRENCY_SYMBOL", "\u20b9")
 

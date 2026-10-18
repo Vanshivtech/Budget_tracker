@@ -288,6 +288,9 @@
       sessionStorage.setItem('abt_user', JSON.stringify(currentUser));
       localStorage.setItem('abt_token', authToken);
       localStorage.setItem('abt_user', JSON.stringify(currentUser));
+      if (isCapacitorApp() && window.AndroidAuth && typeof window.AndroidAuth.setAuthToken === 'function') {
+        window.AndroidAuth.setAuthToken(authToken);
+      }
 
       checkMaintenanceStatus();
 
@@ -321,6 +324,9 @@
     localStorage.removeItem('abt_token');
     localStorage.removeItem('abt_user');
     localStorage.removeItem('abt_onboarding_skipped');
+    if (window.AndroidAuth && typeof window.AndroidAuth.clearAuthToken === 'function') {
+      window.AndroidAuth.clearAuthToken();
+    }
     const mb = document.getElementById('maintenance-banner');
     if (mb) mb.style.display = 'none';
     hideOnboarding();
@@ -343,6 +349,9 @@
     const user = sessionStorage.getItem('abt_user') || localStorage.getItem('abt_user');
     if (token && user) {
       authToken = token;
+      if (isCapacitorApp() && window.AndroidAuth && typeof window.AndroidAuth.setAuthToken === 'function') {
+        window.AndroidAuth.setAuthToken(authToken);
+      }
       try {
         currentUser = JSON.parse(user);
       } catch (_) {
@@ -6031,6 +6040,15 @@
 
     async init() {
       if (!this.isCapacitor()) return;
+
+      if (isCapacitorApp()) {
+        // FCM token is sent natively via onNewToken callback
+        // No JS action needed - Java handles it
+        if (window.AndroidAuth && typeof window.AndroidAuth.setAuthToken === 'function' && authToken) {
+          window.AndroidAuth.setAuthToken(authToken);
+        }
+      }
+
       try {
         const plugin = window.Capacitor.Plugins?.SmsReaderPlugin;
         if (!plugin) return;

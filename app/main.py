@@ -47,7 +47,7 @@ from app.db import (
     add_receipt, get_receipts, get_receipt_by_id, delete_receipt, get_transaction_receipts,
     get_cached_merchant_category, set_cached_merchant_category, get_past_merchant_category,
     get_udhar_reminder_data, get_cashflow_calendar, get_overspending_projections,
-    save_push_subscription, get_user_push_subscriptions, remove_push_subscription, clear_all_push_subscriptions,
+    save_push_subscription, save_fcm_token, get_user_push_subscriptions, remove_push_subscription, clear_all_push_subscriptions,
     check_and_record_notification, normalize_merchant, check_duplicate_expense,
     log_transaction,
     # Engagement Notification System
@@ -87,7 +87,7 @@ from app.importer import (
     parse_csv_content, parse_plain_text_statements, categorize_by_rule,
     batch_llm_categorize, MAX_FILE_BYTES, MAX_ROWS,
 )
-from app.push import send_web_push, send_engagement_notification, send_push_to_user
+from app.push import send_web_push, send_engagement_notification, send_push_to_user, send_fcm_notification
 from pywebpush import webpush, WebPushException
 from app.scheduler import (
     start_scheduler,
@@ -528,6 +528,11 @@ class PushSubscribeRequest(BaseModel):
 
 class PushUnsubscribeRequest(BaseModel):
     endpoint: str
+
+
+class FcmTokenRequest(BaseModel):
+    token: str
+    platform: str = "android"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -2275,11 +2280,23 @@ def push_unsubscribe(req: PushUnsubscribeRequest, user: dict = Depends(get_curre
     return {"status": "ok", "removed": ok}
 
 
+@app.post("/api/push/fcm-token")
+def register_fcm_token(req: FcmTokenRequest, user: dict = Depends(get_current_user)):
+    """Register or update an Android FCM token in push_subscriptions with type='fcm'."""
+    token = req.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing or empty FCM token.")
+    sub = save_fcm_token(user_id=user["id"], token=token, platform=req.platform)
+    _safe_print(f"📱 FCM token registered for user {user['id']} (platform={req.platform})")
+    return {"status": "ok", "subscription": sub}
+
+
 @app.get("/api/push/debug")
 def push_debug(user: dict = Depends(get_current_user)):
-    """Debug endpoint for VAPID configuration and push subscriptions."""
+    """Debug endpoint for VAPID configuration, FCM, and push subscriptions."""
     vapid_pub = (os.environ.get("VAPID_PUBLIC_KEY") or settings.VAPID_PUBLIC_KEY or "").strip().strip('"\'')
     vapid_priv = (os.environ.get("VAPID_PRIVATE_KEY") or settings.VAPID_PRIVATE_KEY or "").strip().strip('"\'')
+    fcm_configured = bool(settings.FIREBASE_SERVICE_ACCOUNT_JSON)
 
     total_subs = 0
     user_subs = 0
@@ -2302,6 +2319,7 @@ def push_debug(user: dict = Depends(get_current_user)):
     return {
         "vapid_public_key_set": bool(vapid_pub),
         "vapid_private_key_set": bool(vapid_priv),
+        "fcm_configured": fcm_configured,
         "subscriptions_count": total_subs,
         "user_subscriptions": user_subs,
         "last_subscription_created": last_created,
@@ -2310,7 +2328,7 @@ def push_debug(user: dict = Depends(get_current_user)):
 
 @app.post("/api/push/test")
 def push_test_trigger(user: dict = Depends(get_current_user)):
-    """Send a test push notification to user's registered devices."""
+    """Send a test push notification to user's registered devices (FCM or Web Push)."""
     subs = get_user_push_subscriptions(user["id"])
     _safe_print(f"🔔 /api/push/test called for user {user['id']} ({user.get('email')}), found {len(subs)} subscription(s)")
     if not subs:
@@ -2324,16 +2342,10 @@ def push_test_trigger(user: dict = Depends(get_current_user)):
     failed = 0
     last_error = ""
     for s in subs:
-        sub_info = {
-            "endpoint": s["endpoint"],
-            "keys": {
-                "p256dh": s["p256dh"],
-                "auth": s["auth"],
-            },
-        }
-        try:
-            success, code, err = send_web_push(
-                subscription_info=sub_info,
+        sub_type = (s.get("type") or "web").lower()
+        if sub_type == "fcm":
+            success, err = send_fcm_notification(
+                token=s["endpoint"],
                 title="SAARTH Alert",
                 body="Test notification received successfully. Your SAARTH alerts are active.",
                 url="/",
@@ -2343,15 +2355,36 @@ def push_test_trigger(user: dict = Depends(get_current_user)):
                 sent += 1
             else:
                 failed += 1
-                last_error = err or f"HTTP {code}"
-        except WebPushException as ex:
-            failed += 1
-            status_code = ex.response.status_code if ex.response is not None else 0
-            resp_text = ex.response.text if ex.response is not None else ""
-            last_error = f"WebPushException HTTP {status_code}: {resp_text or str(ex)}"
-        except Exception as ex:
-            failed += 1
-            last_error = str(ex)
+                last_error = err or "FCM delivery failed"
+        else:
+            sub_info = {
+                "endpoint": s["endpoint"],
+                "keys": {
+                    "p256dh": s["p256dh"],
+                    "auth": s["auth"],
+                },
+            }
+            try:
+                success, code, err = send_web_push(
+                    subscription_info=sub_info,
+                    title="SAARTH Alert",
+                    body="Test notification received successfully. Your SAARTH alerts are active.",
+                    url="/",
+                    tag="test-alert",
+                )
+                if success:
+                    sent += 1
+                else:
+                    failed += 1
+                    last_error = err or f"HTTP {code}"
+            except WebPushException as ex:
+                failed += 1
+                status_code = ex.response.status_code if ex.response is not None else 0
+                resp_text = ex.response.text if ex.response is not None else ""
+                last_error = f"WebPushException HTTP {status_code}: {resp_text or str(ex)}"
+            except Exception as ex:
+                failed += 1
+                last_error = str(ex)
 
     if sent == 0 and failed > 0:
         raise HTTPException(
@@ -2516,9 +2549,10 @@ def run_engagement_notifications() -> dict:
         for s in push_subs:
             sub_info = {
                 "endpoint": s["endpoint"],
+                "type": s.get("type", "web"),
                 "keys": {
-                    "p256dh": s["p256dh"],
-                    "auth": s["auth"],
+                    "p256dh": s.get("p256dh", ""),
+                    "auth": s.get("auth", ""),
                 },
             }
             success, code, err = send_engagement_notification(
