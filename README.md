@@ -200,8 +200,44 @@ SAARTH supports a unified web, progressive web app, and native Android applicati
 ### 2. Capacitor Android Hybrid Architecture
 - **Directory:** [`android-app/`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/)
 - **Application ID:** `in.saarthh.app`
+- **Application Name:** `SAARTH` (configured in [`strings.xml`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/android/app/src/main/res/values/strings.xml) and [`AndroidManifest.xml`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/android/app/src/main/AndroidManifest.xml))
 - **Server Wrapper:** `capacitor.config.json` is configured with `server.url = "https://saarthh.in"`. The APK operates as a high-performance native container rendering the live, deployed web application while accessing native device APIs.
-- **Android Permissions:** `android.permission.RECEIVE_SMS` and `android.permission.READ_SMS`.
+- **Native Platform Detection & Landing Page Bypass:**
+  - `isCapacitorApp()` in [`frontend/app.js`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/frontend/app.js) and `<head>` script in [`frontend/index.html`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/frontend/index.html) detect `window.Capacitor.isNativePlatform()`.
+  - **Native Launch Flow:** Skips the marketing landing page entirely. Checks existing authentication session (`localStorage` + `sessionStorage`):
+    - *If logged in:* Routes directly to the financial dashboard/home view (`switchView('dashboard')`).
+    - *If not logged in:* Immediately displays the clean login screen.
+  - **Web Browser Flow:** Shows marketing landing page as normal without alteration.
+- **Brand Launcher Icons & Adaptive Icon Generation:**
+  - Automated Python Pillow generator: [`scripts/generate_icons.py`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/scripts/generate_icons.py).
+  - Resizes master icon ([`frontend/icon-512.png`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/frontend/icon-512.png) / [`frontend/icon-192.png`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/frontend/icon-192.png)) across all 5 Android mipmap densities:
+    - `mipmap-mdpi` (48x48 icon, 108x108 adaptive foreground)
+    - `mipmap-hdpi` (72x72 icon, 162x162 adaptive foreground)
+    - `mipmap-xhdpi` (96x96 icon, 216x216 adaptive foreground)
+    - `mipmap-xxhdpi` (144x144 icon, 324x324 adaptive foreground)
+    - `mipmap-xxxhdpi` (192x192 icon, 432x432 adaptive foreground)
+  - Generates `ic_launcher.png`, `ic_launcher_round.png`, and adaptive `ic_launcher_foreground.png` with `#0a0a0f` background ([`ic_launcher_background.xml`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/android/app/src/main/res/values/ic_launcher_background.xml)).
+- **First-Launch Permission Flow & Denial Warning Banner:**
+  - Implemented in [`MainActivity.java`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/android/app/src/main/java/in/saarthh/app/MainActivity.java).
+  - Checks `SharedPreferences` key `permissions_requested`.
+  - **Pre-Request Explanation Dialog:** Displays a native `AlertDialog` before triggering system permission requests:
+    > *"SAARTH needs SMS access to auto-import your bank transactions. Notification permission lets us alert you about budget limits."*
+  - **Runtime Permission Request:** Requests `RECEIVE_SMS`, `READ_SMS`, and `POST_NOTIFICATIONS` (Android 13+ / API 33+).
+  - **Graceful Degradation:** If permissions are denied, the app continues to function normally without crashing.
+  - **Webview Notification:** Informs the frontend via `window.onSmsPermissionDenied()` to display a non-intrusive alert banner:
+    > *"SMS import disabled. Grant permission in Settings to enable."*
+- **Native Splash Screen Configuration:**
+  - Defined in [`android-app/capacitor.config.json`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/capacitor.config.json):
+    ```json
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#0a0a0f",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_CROP",
+      "splashFullScreen": true,
+      "splashImmersive": true
+    }
+    ```
 
 ### 3. Native Bank & UPI SMS Reader Plugin
 - **Source:** [`android-app/sms-plugin/SmsReaderPlugin.java`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/sms-plugin/SmsReaderPlugin.java) & [`android-app/sms-plugin/index.ts`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/android-app/sms-plugin/index.ts)
@@ -228,14 +264,15 @@ SAARTH supports a unified web, progressive web app, and native Android applicati
 - **Public Endpoint (`GET /api/app/version?platform=android`):**
   ```json
   {
-    "version": "1.0.0",
-    "download_url": "https://saarthh.in/download/saarth-v1.0.0.apk",
-    "changelog": "First release of SAARTH!",
+    "version": "1.0.1",
+    "download_url": "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.1/saarth-release.apk",
+    "changelog": "Fix app icon, first-launch permissions dialog, landing page bypass, and splash screen.",
     "is_forced": false,
     "platform": "android"
   }
   ```
 - **Admin Management (`POST /api/admin/app/version`):** Protected by `get_current_admin` dependency.
+- **Direct APK Route (`GET /download/latest`):** 302 redirects directly to the latest APK release URL.
 - **Update Barrier Logic:**
   - **`is_forced: false`:** Dismissible bottom banner: *"Update available (v1.0.1) — Download"*.
   - **`is_forced: true`:** Non-dismissible full-screen modal (*"Update Required"*), locking the app interface until the new APK is installed.
@@ -245,11 +282,12 @@ SAARTH supports a unified web, progressive web app, and native Android applicati
 - **Triggers:** Push to `main`, manual `workflow_dispatch`, or version release tags (`v*`).
 - **Build Pipeline:**
   1. Checks out repository and sets up Java 17 + Node 20.
-  2. Runs `npm install` and `npx cap sync android`.
-  3. Decodes release keystore from GitHub Secret `KEYSTORE_BASE64`.
-  4. Runs `./gradlew assembleRelease` (falls back to debug APK if no keystore).
-  5. Uploads APK as workflow artifact.
-  6. On version tags (`v*`): Creates GitHub Release with APK attached and automatically updates SAARTH backend version via `POST /api/admin/app/version`.
+  2. Sets up Python 3.12 (`actions/setup-python@v5`), installs Pillow, and executes `python scripts/generate_icons.py` to ensure fresh, crisp Android mipmap icons.
+  3. Runs `npm install` and `npx cap sync android`.
+  4. Decodes release keystore from GitHub Secret `KEYSTORE_BASE64`.
+  5. Runs `./gradlew assembleRelease` (falls back to debug APK if no keystore).
+  6. Uploads APK as workflow artifact.
+  7. On version tags (`v*`): Creates GitHub Release with APK attached and automatically updates SAARTH backend version via `POST /api/admin/app/version`.
 
 ### 7. Sideload Download Portal (`saarthh.in/download`)
 - **Template:** [`frontend/download.html`](file:///d:/Projects/LLM%20(GenAI)/Whatsapp_budget_tracker/frontend/download.html)
@@ -298,16 +336,19 @@ SAARTH supports a unified web, progressive web app, and native Android applicati
 #### Android Capacitor App (`android-app/`)
 | File | Last Modified | Purpose |
 |---|---|---|
-| `android-app/package.json` | 2026-10-17 | Capacitor 6 Android dependencies & build scripts |
-| `android-app/capacitor.config.json` | 2026-10-17 | Capacitor runtime config (`in.saarthh.app`, `https://saarthh.in`) |
+| `android-app/package.json` | 2026-10-18 | Capacitor 6 Android dependencies & build scripts |
+| `android-app/capacitor.config.json` | 2026-10-18 | Capacitor runtime config (`in.saarthh.app`, splash screen, server host) |
 | `android-app/README.md` | 2026-10-17 | Android build guide, keystore configuration & GitHub secrets |
-| `android-app/sms-plugin/SmsReaderPlugin.java` | 2026-10-17 | Native Android SMS reader plugin with broadcast receiver & inbox query |
+| `android-app/android/app/src/main/java/in/saarthh/app/MainActivity.java` | 2026-10-18 | Native bridge activity, first-launch permissions dialog, SMS plugin registration |
+| `android-app/android/app/src/main/java/in/saarthh/app/plugins/SmsReaderPlugin.java` | 2026-10-18 | Native Android SMS reader plugin with broadcast receiver & inbox query |
+| `android-app/sms-plugin/SmsReaderPlugin.java` | 2026-10-17 | Standalone SMS reader plugin reference implementation |
 | `android-app/sms-plugin/index.ts` | 2026-10-17 | TypeScript interface & wrapper for Capacitor SMS plugin |
 
-#### CI/CD & Tests
+#### CI/CD, Scripts & Tests
 | File | Last Modified | Purpose |
 |---|---|---|
-| `.github/workflows/build-android.yml` | 2026-10-17 | Automated APK build, keystore signing, GitHub Release & API update |
+| `.github/workflows/build-android.yml` | 2026-10-18 | Automated APK build, Python icon generator, keystore signing, GitHub Release |
+| `scripts/generate_icons.py` | 2026-10-18 | Automated Pillow script resizing brand icons across all 5 mipmap densities |
 | `tests/test_auth_features.py` | 2026-10-12 | Tests for persistent refresh tokens, CORS, ping, and OTP delivery |
 | `tests/test_app_version.py` | 2026-10-17 | Tests for public/admin app version API and `/api/sms/ingest` |
 
@@ -590,7 +631,7 @@ There are **23 environment variables** referenced in the codebase. All variables
 
 ### 9. Recent Session Changes
 
-SAARTH has undergone six major evolutionary phases to transition from a chat-only prototype into a full-fledged multi-platform personal finance operating system:
+SAARTH has undergone seven major evolutionary phases to transition from a chat-only prototype into a full-fledged multi-platform personal finance operating system:
 
 #### Phase 1: Direct CRUD & Ledger Interface
 - Added complete REST endpoints for manual transactions, category budgets, udhar debts, savings goals, and recurring bill schedules.
@@ -625,6 +666,12 @@ SAARTH has undergone six major evolutionary phases to transition from a chat-onl
 - Added comprehensive Apple Web App and mobile viewport meta tags to `frontend/index.html`.
 - Implemented smart install prompt banner with local/session dismissal memory in `frontend/app.js`.
 
+#### Phase 7: Native Android APK Enhancements & Release v1.0.1
+- **Landing Page Bypass:** Capacitor native app detection (`isCapacitorApp()`) skips marketing landing pages, auto-navigating to dashboard if authenticated (with token persistence in `localStorage`) or clean login screen if unauthenticated.
+- **Brand Launcher Icons Pipeline:** Created `scripts/generate_icons.py` using Pillow to automatically generate crisp icons across all 5 Android mipmap densities (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`) for standard, round, and adaptive foregrounds. Integrated into GitHub Actions CI/CD before Gradle assembly.
+- **First-Launch Permission Flow:** Native `AlertDialog` in `MainActivity.java` explaining why SMS and Notification permissions are needed before prompting for runtime permissions (`RECEIVE_SMS`, `READ_SMS`, `POST_NOTIFICATIONS`), with graceful denial fallbacks and an in-app warning banner.
+- **Native Android Configuration:** App name set to `"SAARTH"` in `strings.xml`, verified in `AndroidManifest.xml`, and configured immersive center-cropped dark splash screen in `capacitor.config.json`.
+
 ---
 
 ### 10. Definitive Feature Status (The Three Lists)
@@ -647,10 +694,11 @@ SAARTH has undergone six major evolutionary phases to transition from a chat-onl
 - **Administrative Portal:** Dedicated admin authentication, system metrics dashboard, registered user management (suspend, force password reset, delete), live application settings editor, database table inspector, and LLM token usage tracking.
 - **Web Push Notifications & APScheduler Engine:** VAPID subscription registration, browser permission handling, automated 4-cron scheduled notifications (morning safe-to-spend, bill due tomorrow, evening logging nudge, Sunday weekly summary), real-time alerts for budget limits (80%/100%), large expenses (>₹5,000), and goal milestones (25%/50%/75%/100%), backed by `notification_log` deduplication.
 - **Progressive Web App (PWA):** Installable standalone app, bottom-sheet install prompt with local dismissal memory, offline service worker registration, mobile screenshots, and app categories.
-- **Native Android APK Container (Capacitor 6):** Wrapped around `https://saarthh.in` with SMS read/receive permissions, splash screen, and status bar.
+- **Native Android APK Container (Capacitor 6):** Wrapped around `https://saarthh.in` with landing page bypass, native brand icons (5 mipmap densities), dark theme splash screen, and status bar.
+- **First-Launch Permission Flow & Denial Banner:** Pre-request explanation dialog for SMS and notifications with runtime permission requests and webview banner alert if denied.
 - **Native Bank & UPI SMS Reader:** Automatic live broadcast receiver filtering Indian banks & UPI senders (SBI, HDFC, ICICI, Axis, Kotak, PNB, Paytm, PhonePe, GPay), regex transaction parsing, duplicate expense detection, and one-time 90-day historic backfill.
 - **App Version Management & Forced Updates:** Dual DB persistence (`app_settings` and `app_versions`), public update polling (`GET /api/app/version`), admin publishing (`POST /api/admin/app/version`), dismissible banner vs locking forced update modal.
-- **CI/CD Pipeline & GitHub Releases:** Automated GitHub Actions build (`build-android.yml`) with Java 17, Gradle keystore signing, artifact upload, release drafting, and admin API webhook.
+- **CI/CD Pipeline & GitHub Releases:** Automated GitHub Actions build (`build-android.yml`) with Java 17, automated icon generation via Pillow, Gradle keystore signing, artifact upload, release drafting, and admin API webhook.
 - **Android Sideload Download Portal:** `GET /download` serving `frontend/download.html` with real-time version fetching and 5-step sideload guide.
 - **Batch LLM Categorization (`app/importer.py`):** Multi-merchant single LLM call fallback using `llm_pool.invoke_with_retry` for unmapped transaction statements.
 - **Monthly Statement Export:** Dynamic export of monthly spending data to Excel (`.xlsx`) and PDF formats.
