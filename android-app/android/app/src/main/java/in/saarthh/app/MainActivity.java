@@ -31,6 +31,11 @@ public class MainActivity extends BridgeActivity {
         checkFirstLaunchPermissions();
 
         if (getBridge() != null && getBridge().getWebView() != null) {
+            android.webkit.WebSettings settings = getBridge().getWebView().getSettings();
+            String originalUa = settings.getUserAgentString();
+            if (originalUa != null && !originalUa.contains("SAARTH_NATIVE_APP")) {
+                settings.setUserAgentString(originalUa + " SAARTH_NATIVE_APP Capacitor");
+            }
             getBridge().getWebView().addJavascriptInterface(new AndroidAuthInterface(), "AndroidAuth");
         }
         SaarthFirebaseService.syncTokenWithServer(this);
@@ -54,6 +59,17 @@ public class MainActivity extends BridgeActivity {
                 .edit()
                 .remove(SaarthFirebaseService.KEY_AUTH_TOKEN)
                 .apply();
+        }
+
+        @android.webkit.JavascriptInterface
+        public String getAuthToken() {
+            return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(SaarthFirebaseService.KEY_AUTH_TOKEN, null);
+        }
+
+        @android.webkit.JavascriptInterface
+        public boolean isNativeApp() {
+            return true;
         }
     }
 

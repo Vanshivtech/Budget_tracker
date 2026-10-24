@@ -280,7 +280,7 @@
 
   <script>
     (async function() {
-      const FALLBACK_URL = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk";
+      const FALLBACK_URL = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.2/saarth-release.apk";
       const btn = document.getElementById('download-btn');
       const btnText = document.getElementById('btn-text');
       const vLabel = document.getElementById('version-label');
@@ -308,7 +308,7 @@
         }
 
         if (data && data.download_url) {
-          const version = data.version || '1.0.0';
+          const version = data.version || '1.0.2';
           const dlUrl = data.download_url.trim() || FALLBACK_URL;
           if (btn) btn.href = dlUrl;
           if (btnText) btnText.textContent = `Download SAARTH v${version} for Android`;

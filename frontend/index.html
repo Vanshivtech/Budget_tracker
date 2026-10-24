@@ -21,12 +21,50 @@
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', theme === 'light' ? '#F4F6F8' : '#0B0D11');
 
-        // Early Capacitor Native App detection
-        var isCap = window.Capacitor !== undefined && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform();
+        // Early Capacitor Native App detection before page renders
+        function detectCapacitor() {
+          try {
+            if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
+              return true;
+            }
+            if (window._capacitorNative !== undefined || window.AndroidAuth !== undefined || window.androidBridge !== undefined) {
+              return true;
+            }
+            if (navigator.userAgent && (navigator.userAgent.indexOf('SAARTH_NATIVE_APP') !== -1 || navigator.userAgent.indexOf('Capacitor') !== -1)) {
+              return true;
+            }
+          } catch (e) {}
+          return false;
+        }
+
+        var isCap = detectCapacitor();
+        window._isCapacitorApp = isCap;
+        window.isCapacitorApp = function() {
+          return window._isCapacitorApp || detectCapacitor();
+        };
+
         if (isCap) {
+          document.documentElement.classList.add('is-capacitor-app');
           var token = sessionStorage.getItem('abt_token') || localStorage.getItem('abt_token');
-          if (!token && window.location.pathname === '/' && window.location.hostname.includes('saarthh.in')) {
-            window.location.replace('/login');
+          if (!token && window.AndroidAuth && typeof window.AndroidAuth.getAuthToken === 'function') {
+            try {
+              token = window.AndroidAuth.getAuthToken();
+              if (token) {
+                localStorage.setItem('abt_token', token);
+              }
+            } catch (_) {}
+          }
+
+          if (token) {
+            // Already logged in - make sure native app goes directly to dashboard view
+            if (window.location.pathname === '/' || window.location.pathname === '/login') {
+              window.location.hash = '#dashboard';
+            }
+          } else {
+            // Not logged in - native app must NEVER see the landing page, go directly to /login
+            if (window.location.pathname === '/' && window.location.hostname.includes('saarthh.in')) {
+              window.location.replace('/login');
+            }
           }
         }
       } catch (e) {}

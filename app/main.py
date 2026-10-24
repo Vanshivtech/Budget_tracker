@@ -139,20 +139,21 @@ async def lifespan(app: FastAPI):
         print(f"[STARTUP] Cleared {count} stale push subscriptions after VAPID key change")
         set_app_setting("push_subscriptions_cleared_after_vapid_change", "true")
 
-    # Startup check: Ensure Android app version points to GitHub release
+    # Startup check: Ensure Android app version points to release 1.0.2 in database
     try:
-        github_release_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk"
+        github_release_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.2/saarth-release.apk"
         v = get_app_version("android")
+        curr_ver = (v.get("version") or "").strip() if isinstance(v, dict) else ""
         curr_url = (v.get("download_url") or "").strip() if isinstance(v, dict) else ""
-        if not curr_url or "saarth-v1.0.0.apk" in curr_url or curr_url != github_release_apk:
+        if curr_ver != "1.0.2" or not curr_url or "saarth-v1.0.0.apk" in curr_url or "v1.0.0" in curr_url:
             set_app_version(
                 platform="android",
-                version="1.0.0",
+                version="1.0.2",
                 download_url=github_release_apk,
-                changelog="First release of SAARTH for Android",
+                changelog="Release v1.0.2: Notifications, adaptive icon fixes, and stability improvements",
                 is_forced=False,
             )
-            print("[STARTUP] Updated Android app version to point to GitHub release.")
+            print("[STARTUP] Updated Android app version to 1.0.2 in database.")
     except Exception as e:
         logger.warning(f"Error checking initial app version: {e}")
 
@@ -2932,7 +2933,7 @@ def serve_download():
 @app.get("/download/latest")
 def download_latest_apk():
     """Directly redirect to the latest Android APK download URL."""
-    fallback_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.0/saarth-release.apk"
+    fallback_apk = "https://github.com/Vanshivtech/Budget_tracker/releases/download/v1.0.2/saarth-release.apk"
     try:
         ver_info = get_app_version("android")
         download_url = ver_info.get("download_url") if isinstance(ver_info, dict) else None
@@ -2944,6 +2945,7 @@ def download_latest_apk():
 
 
 @app.get("/")
+@app.get("/login")
 @app.get("/settings")
 @app.get("/dashboard")
 @app.get("/goals")

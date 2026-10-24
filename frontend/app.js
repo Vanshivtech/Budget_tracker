@@ -8,7 +8,19 @@
 
   // ---------- Capacitor Native Detection ----------
   const isCapacitorApp = () => {
-    return window.Capacitor !== undefined && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform();
+    if (window._isCapacitorApp !== undefined) return window._isCapacitorApp;
+    let isNative = false;
+    try {
+      if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
+        isNative = true;
+      } else if (window._capacitorNative !== undefined || window.AndroidAuth !== undefined || window.androidBridge !== undefined) {
+        isNative = true;
+      } else if (navigator.userAgent && (navigator.userAgent.indexOf('SAARTH_NATIVE_APP') !== -1 || navigator.userAgent.indexOf('Capacitor') !== -1)) {
+        isNative = true;
+      }
+    } catch (e) {}
+    window._isCapacitorApp = isNative;
+    return isNative;
   };
   window.isCapacitorApp = isCapacitorApp;
 
@@ -6108,39 +6120,54 @@
   // ================================================================
   const APP_VERSION = '1.0.0';
 
+  function parseSemver(v) {
+    if (!v) return [0, 0, 0];
+    const cleaned = String(v).trim().replace(/^v/i, '');
+    const parts = cleaned.split(/[-+.]/).map((p) => {
+      const num = parseInt(p, 10);
+      return isNaN(num) ? 0 : num;
+    });
+    while (parts.length < 3) parts.push(0);
+    return parts;
+  }
+
   function isNewerVersion(remote, current) {
     if (!remote || !current) return false;
-    const rParts = String(remote).split('.').map((n) => parseInt(n, 10) || 0);
-    const cParts = String(current).split('.').map((n) => parseInt(n, 10) || 0);
-    for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
-      const r = rParts[i] || 0;
-      const c = cParts[i] || 0;
-      if (r > c) return true;
-      if (r < c) return false;
+    const r = parseSemver(remote);
+    const c = parseSemver(current);
+    for (let i = 0; i < Math.max(r.length, c.length); i++) {
+      const rNum = r[i] || 0;
+      const cNum = c[i] || 0;
+      if (rNum > cNum) return true;
+      if (rNum < cNum) return false;
     }
     return false;
   }
 
   async function checkAppUpdate() {
-    if (window.Capacitor === undefined) return;
+    if (!isCapacitorApp()) return;
     try {
       const data = await api('/api/app/version?platform=android');
       if (!data || !data.version) return;
 
-      if (isNewerVersion(data.version, APP_VERSION)) {
+      const remoteVer = String(data.version).trim().replace(/^v/i, '');
+      const downloadUrl = data.download_url || 'https://saarthh.in/download';
+
+      if (isNewerVersion(remoteVer, APP_VERSION)) {
         if (data.is_forced) {
-          showForcedUpdateModal(data.version, data.download_url, data.changelog);
+          showForcedUpdateModal(remoteVer, downloadUrl, data.changelog);
         } else {
-          showDismissibleUpdateBanner(data.version, data.download_url);
+          showDismissibleUpdateBanner(remoteVer, downloadUrl);
         }
       }
     } catch (err) {
       console.warn('checkAppUpdate failed:', err);
     }
   }
+  window.checkAppUpdate = checkAppUpdate;
 
   function showDismissibleUpdateBanner(version, downloadUrl) {
-    if (document.getElementById('app-update-banner')) return;
+    if (document.getElementById('app-update-banner') || document.getElementById('forced-update-modal')) return;
     const banner = document.createElement('div');
     banner.id = 'app-update-banner';
     banner.style.cssText = `
@@ -6150,15 +6177,17 @@
       display: flex; align-items: center; gap: 14px; max-width: 90vw; color: #fff;
       font-family: inherit; font-size: 14px;
     `;
+    const cleanVer = String(version || '').replace(/^v/i, '');
+    const targetUrl = 'https://saarthh.in/download';
     banner.innerHTML = `
-      <span>🚀 Update available (v${escapeHtml(version)})</span>
-      <button id="btn-update-download" style="background:#6c63ff;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;">Download</button>
-      <button id="btn-update-dismiss" style="background:transparent;color:#888;border:none;cursor:pointer;font-size:18px;line-height:1;">&times;</button>
+      <span>🚀 Update available (v${escapeHtml(cleanVer)})</span>
+      <a id="btn-update-download" href="${targetUrl}" target="_blank" rel="noopener noreferrer" style="background:#6c63ff;color:#fff;text-decoration:none;border-radius:8px;padding:6px 14px;font-weight:600;display:inline-block;">Download</a>
+      <button type="button" id="btn-update-dismiss" style="background:transparent;color:#888;border:none;cursor:pointer;font-size:18px;line-height:1;" aria-label="Dismiss">&times;</button>
     `;
     document.body.appendChild(banner);
 
     document.getElementById('btn-update-download')?.addEventListener('click', () => {
-      window.open(downloadUrl || 'https://saarthh.in/download', '_blank');
+      window.open(targetUrl, '_blank');
     });
     document.getElementById('btn-update-dismiss')?.addEventListener('click', () => {
       banner.remove();
@@ -6167,32 +6196,55 @@
 
   function showForcedUpdateModal(version, downloadUrl, changelog) {
     if (document.getElementById('forced-update-modal')) return;
+    const banner = document.getElementById('app-update-banner');
+    if (banner) banner.remove();
+
     const overlay = document.createElement('div');
     overlay.id = 'forced-update-modal';
     overlay.style.cssText = `
       position: fixed; inset: 0; z-index: 999999; background: rgba(10, 10, 15, 0.98);
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 24px; text-align: center; color: #fff; font-family: inherit;
+      padding: 24px; text-align: center; color: #fff; font-family: inherit; pointer-events: all;
     `;
+    const cleanVer = String(version || '').replace(/^v/i, '');
+    const targetUrl = 'https://saarthh.in/download';
     overlay.innerHTML = `
       <div style="max-width: 400px; background: #12141a; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 16px; padding: 32px 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.8);">
         <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
         <h2 style="font-size: 22px; margin: 0 0 8px 0; font-weight: 700; color: #f87171;">Update Required</h2>
         <p style="color: #9ca3af; font-size: 14px; margin: 0 0 16px 0; line-height: 1.5;">
-          A critical security update (v${escapeHtml(version)}) is required to continue using SAARTH.
+          A critical update (v${escapeHtml(cleanVer)}) is required to continue using SAARTH.
         </p>
         ${changelog ? `<div style="background: #1a1d26; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #d1d5db; text-align: left; margin-bottom: 20px;">${escapeHtml(changelog)}</div>` : ''}
-        <button id="btn-forced-download" style="width: 100%; background: #6c63ff; color: #fff; border: none; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(108, 99, 255, 0.4);">
+        <a id="btn-forced-download" href="${targetUrl}" target="_blank" rel="noopener noreferrer" style="display: block; width: 100%; box-sizing: border-box; background: #6c63ff; color: #fff; text-decoration: none; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 14px rgba(108, 99, 255, 0.4); text-align: center;">
           Download Update
-        </button>
+        </a>
       </div>
     `;
     document.body.appendChild(overlay);
 
     document.getElementById('btn-forced-download')?.addEventListener('click', () => {
-      window.open(downloadUrl || 'https://saarthh.in/download', '_blank');
+      window.open(targetUrl, '_blank');
     });
   }
+
+  // Version polling: check updates on every app open / visibility change / focus
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && authToken) {
+      checkAppUpdate();
+    }
+  });
+  window.addEventListener('focus', () => {
+    if (authToken) {
+      checkAppUpdate();
+    }
+  });
+  // Periodic poll every 15 minutes while app is running
+  setInterval(() => {
+    if (authToken) {
+      checkAppUpdate();
+    }
+  }, 15 * 60 * 1000);
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
