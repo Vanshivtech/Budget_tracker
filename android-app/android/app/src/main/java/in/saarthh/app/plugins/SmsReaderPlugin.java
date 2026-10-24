@@ -71,6 +71,24 @@ public class SmsReaderPlugin extends Plugin {
 
     @PluginMethod
     public void startListening(PluginCall call) {
+        try {
+            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "RECEIVE_SMS permission is missing or not granted.");
+                JSObject ret = new JSObject();
+                ret.put("status", "denied");
+                ret.put("message", "SMS permission is missing or not granted");
+                call.resolve(ret);
+                return;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error checking SMS permission: " + e.getMessage());
+            JSObject ret = new JSObject();
+            ret.put("status", "denied");
+            ret.put("message", "SMS permission check failed: " + e.getMessage());
+            call.resolve(ret);
+            return;
+        }
+
         if (getPermissionState("sms") != com.getcapacitor.PermissionState.GRANTED) {
             requestPermissionForAlias("sms", call, "smsPermissionCallback");
             return;
@@ -179,6 +197,26 @@ public class SmsReaderPlugin extends Plugin {
 
     @PluginMethod
     public void backfillSms(PluginCall call) {
+        try {
+            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "READ_SMS permission is missing or not granted.");
+                JSObject ret = new JSObject();
+                ret.put("status", "denied");
+                ret.put("message", "SMS permission is missing or not granted");
+                ret.put("sms", new JSArray());
+                call.resolve(ret);
+                return;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error checking SMS permission: " + e.getMessage());
+            JSObject ret = new JSObject();
+            ret.put("status", "denied");
+            ret.put("message", "SMS permission check failed: " + e.getMessage());
+            ret.put("sms", new JSArray());
+            call.resolve(ret);
+            return;
+        }
+
         if (getPermissionState("sms") != com.getcapacitor.PermissionState.GRANTED) {
             requestPermissionForAlias("sms", call, "backfillPermissionCallback");
             return;

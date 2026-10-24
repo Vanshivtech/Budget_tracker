@@ -4,9 +4,11 @@
   "webDir": "../frontend",
   "server": {
     "url": "https://saarthh.in",
-    "cleartext": false
+    "cleartext": false,
+    "androidScheme": "https"
   },
   "android": {
+    "appendUserAgent": "SAARTH_NATIVE_APP",
     "buildOptions": {
       "keystorePath": "saarth.keystore",
       "keystoreAlias": "saarth"

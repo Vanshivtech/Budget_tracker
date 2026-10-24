@@ -13,6 +13,35 @@
   <title>SAARTH — Make money meaningful</title>
 
   <script>
+  (function() {
+    var ua = navigator.userAgent || '';
+    var isNative = ua.indexOf('SAARTH_NATIVE_APP') !== -1;
+    if (isNative) {
+      window.__SAARTH_NATIVE = true;
+      document.documentElement.setAttribute('data-native', 'true');
+      // Hide everything until we know where to route
+      document.documentElement.style.opacity = '0';
+    }
+  })();
+  </script>
+
+  <style>
+    /* Native app: never show Android download CTAs / "Get the app" sections or web push card */
+    html[data-native="true"] .android-download,
+    html[data-native="true"] .get-android-app,
+    html[data-native="true"] .app-download-banner,
+    html[data-native="true"] .download-android-btn,
+    html[data-native="true"] [data-android-download],
+    html[data-native="true"] #download-app-banner,
+    html[data-native="true"] #login-download-btn,
+    html[data-native="true"] a[href*="/download"],
+    html[data-native="true"] a[href$=".apk"],
+    html[data-native="true"] #settings-web-push-card {
+      display: none !important;
+    }
+  </style>
+
+  <script>
     (function() {
       try {
         var saved = localStorage.getItem('abt_theme');
@@ -20,53 +49,6 @@
         document.documentElement.setAttribute('data-theme', theme);
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', theme === 'light' ? '#F4F6F8' : '#0B0D11');
-
-        // Early Capacitor Native App detection before page renders
-        function detectCapacitor() {
-          try {
-            if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
-              return true;
-            }
-            if (window._capacitorNative !== undefined || window.AndroidAuth !== undefined || window.androidBridge !== undefined) {
-              return true;
-            }
-            if (navigator.userAgent && (navigator.userAgent.indexOf('SAARTH_NATIVE_APP') !== -1 || navigator.userAgent.indexOf('Capacitor') !== -1)) {
-              return true;
-            }
-          } catch (e) {}
-          return false;
-        }
-
-        var isCap = detectCapacitor();
-        window._isCapacitorApp = isCap;
-        window.isCapacitorApp = function() {
-          return window._isCapacitorApp || detectCapacitor();
-        };
-
-        if (isCap) {
-          document.documentElement.classList.add('is-capacitor-app');
-          var token = sessionStorage.getItem('abt_token') || localStorage.getItem('abt_token');
-          if (!token && window.AndroidAuth && typeof window.AndroidAuth.getAuthToken === 'function') {
-            try {
-              token = window.AndroidAuth.getAuthToken();
-              if (token) {
-                localStorage.setItem('abt_token', token);
-              }
-            } catch (_) {}
-          }
-
-          if (token) {
-            // Already logged in - make sure native app goes directly to dashboard view
-            if (window.location.pathname === '/' || window.location.pathname === '/login') {
-              window.location.hash = '#dashboard';
-            }
-          } else {
-            // Not logged in - native app must NEVER see the landing page, go directly to /login
-            if (window.location.pathname === '/' && window.location.hostname.includes('saarthh.in')) {
-              window.location.replace('/login');
-            }
-          }
-        }
       } catch (e) {}
     })();
   </script>
@@ -932,7 +914,7 @@
               </div>
 
               <!-- Section: Web Push Notifications -->
-              <div class="settings-card">
+              <div class="settings-card" id="settings-web-push-card">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                   <div>
                     <h3>Web Push Notifications</h3>

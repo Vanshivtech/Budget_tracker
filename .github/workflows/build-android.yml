@@ -49,12 +49,6 @@ jobs:
           PLUGIN_DIR="android/app/src/main/java/in/saarthh/app/plugins"
           mkdir -p "$PLUGIN_DIR"
           cp sms-plugin/SmsReaderPlugin.java "$PLUGIN_DIR/"
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            if ! grep -q "android.permission.RECEIVE_SMS" "$MANIFEST"; then
-              sed -i '/<manifest/a \    <uses-permission android:name="android.permission.RECEIVE_SMS" />\n    <uses-permission android:name="android.permission.READ_SMS" />' "$MANIFEST"
-            fi
-          fi
 
       - name: Set up Python for icon generation
         uses: actions/setup-python@v5

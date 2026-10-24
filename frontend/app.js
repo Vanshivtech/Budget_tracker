@@ -7,22 +7,63 @@
   'use strict';
 
   // ---------- Capacitor Native Detection ----------
+  // Capacitor appends "SAARTH_NATIVE_APP" to the WebView UA (capacitor.config.json -> android.appendUserAgent)
   const isCapacitorApp = () => {
-    if (window._isCapacitorApp !== undefined) return window._isCapacitorApp;
-    let isNative = false;
-    try {
-      if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
-        isNative = true;
-      } else if (window._capacitorNative !== undefined || window.AndroidAuth !== undefined || window.androidBridge !== undefined) {
-        isNative = true;
-      } else if (navigator.userAgent && (navigator.userAgent.indexOf('SAARTH_NATIVE_APP') !== -1 || navigator.userAgent.indexOf('Capacitor') !== -1)) {
-        isNative = true;
-      }
-    } catch (e) {}
-    window._isCapacitorApp = isNative;
-    return isNative;
+    return window.__SAARTH_NATIVE === true ||
+      (navigator.userAgent || '').indexOf('SAARTH_NATIVE_APP') !== -1;
   };
   window.isCapacitorApp = isCapacitorApp;
+
+  function revealNativePage() {
+    document.documentElement.style.opacity = '1';
+  }
+
+  function hideNativeDownloadCtas() {
+    if (!isCapacitorApp()) return;
+    const selectors = [
+      '.android-download',
+      '.get-android-app',
+      '.app-download-banner',
+      '.download-android-btn',
+      '[data-android-download]',
+      '#download-app-banner',
+      '#login-download-btn',
+      'a[href*="/download"]',
+      'a[href$=".apk"]',
+      '#settings-web-push-card'
+    ];
+    document.querySelectorAll(selectors.join(', ')).forEach((el) => {
+      el.style.display = 'none';
+    });
+
+    // Also hide any link/button/section containing download app wording on login or landing
+    document.querySelectorAll('#auth-screen a, #auth-screen button, .auth-container a, .auth-card a, header a, footer a').forEach((el) => {
+      const txt = (el.textContent || '').toLowerCase();
+      if ((txt.includes('download') && (txt.includes('android') || txt.includes('app') || txt.includes('apk'))) ||
+          txt.includes('get the app') || txt.includes('get the android')) {
+        el.style.display = 'none';
+        if (el.parentElement && (el.parentElement.classList.contains('download-section') || el.parentElement.classList.contains('auth-switch'))) {
+          if (el.parentElement.children.length === 1) {
+            el.parentElement.style.display = 'none';
+          }
+        }
+      }
+    });
+  }
+
+  if (isCapacitorApp()) {
+    hideNativeDownloadCtas();
+    try {
+      const ctaObserver = new MutationObserver(() => hideNativeDownloadCtas());
+      if (document.body) {
+        ctaObserver.observe(document.body, { childList: true, subtree: true });
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (document.body) ctaObserver.observe(document.body, { childList: true, subtree: true });
+        });
+      }
+    } catch (_) {}
+  }
 
   // ---------- State ----------
   let authToken = null;
@@ -344,6 +385,8 @@
     hideOnboarding();
     authScreen.style.display = '';
     appScreen.classList.remove('active');
+    revealNativePage();
+    hideNativeDownloadCtas();
     // Reset state
     messageListInner.querySelectorAll('.msg').forEach((m) => m.remove());
     chatWelcome.style.display = '';
@@ -444,6 +487,8 @@
     authScreen.style.display = 'none';
     hideOnboarding();
     appScreen.classList.add('active');
+    revealNativePage();
+    hideNativeDownloadCtas();
     updateUserUI();
     loadUserIdentity();
     initMobileTooltips();
@@ -3548,8 +3593,10 @@
         updateUserUI();
       }
 
-      // 3. Web Push State
-      await checkAndUpdatePushState();
+      // 3. Web Push State (browser only, native app uses FCM)
+      if (!isCapacitorApp()) {
+        await checkAndUpdatePushState();
+      }
 
       // 4. Custom Categories
       renderSettingsCategories(categoriesData.custom || []);
@@ -3817,6 +3864,8 @@
   }
 
   async function checkAndUpdatePushState() {
+    // Native app: FCM handles notifications natively -> skip web push silently
+    if (isCapacitorApp()) return;
     const toggleBtn = $('#btn-toggle-push');
     if (!toggleBtn) return;
 
@@ -3868,65 +3917,68 @@
     }
   }
 
-  const togglePushBtn = $('#btn-toggle-push');
-  if (togglePushBtn) {
-    togglePushBtn.addEventListener('click', async () => {
-      togglePushBtn.disabled = true;
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
+  // Web Push is browser-only; FCM handles notifications natively in the Capacitor APK
+  if (!isCapacitorApp()) {
+    const togglePushBtn = $('#btn-toggle-push');
+    if (togglePushBtn) {
+      togglePushBtn.addEventListener('click', async () => {
+        togglePushBtn.disabled = true;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
 
-        if (sub) {
-          // Toggle OFF flow:
-          // Unsubscribe on browser side AND call POST /api/push/unsubscribe on backend
-          const ep = sub.endpoint;
-          try {
-            await sub.unsubscribe();
-          } catch (unsubErr) {
-            console.warn('[PUSH] Unsubscribe error:', unsubErr);
-          }
-          await api('/api/push/unsubscribe', {
-            method: 'POST',
-            body: JSON.stringify({ endpoint: ep }),
-          }).catch(() => null);
-          showToast('Web Push notifications disabled', 'info');
-        } else {
-          // Toggle ON flow:
-          const perm = await Notification.requestPermission();
-          if (perm !== 'granted') {
-            showToast('Notification permission was not granted', 'error');
-            await checkAndUpdatePushState();
-            return;
-          }
+          if (sub) {
+            // Toggle OFF flow:
+            // Unsubscribe on browser side AND call POST /api/push/unsubscribe on backend
+            const ep = sub.endpoint;
+            try {
+              await sub.unsubscribe();
+            } catch (unsubErr) {
+              console.warn('[PUSH] Unsubscribe error:', unsubErr);
+            }
+            await api('/api/push/unsubscribe', {
+              method: 'POST',
+              body: JSON.stringify({ endpoint: ep }),
+            }).catch(() => null);
+            showToast('Web Push notifications disabled', 'info');
+          } else {
+            // Toggle ON flow:
+            const perm = await Notification.requestPermission();
+            if (perm !== 'granted') {
+              showToast('Notification permission was not granted', 'error');
+              await checkAndUpdatePushState();
+              return;
+            }
 
-          const vapidData = await api('/api/push/vapid-key');
-          await performPushSubscribe(reg, vapidData);
-          showToast('Web Push notifications activated!', 'success');
+            const vapidData = await api('/api/push/vapid-key');
+            await performPushSubscribe(reg, vapidData);
+            showToast('Web Push notifications activated!', 'success');
+          }
+        } catch (err) {
+          showToast(err.message || 'Push toggle failed', 'error');
+        } finally {
+          togglePushBtn.disabled = false;
+          await checkAndUpdatePushState();
         }
-      } catch (err) {
-        showToast(err.message || 'Push toggle failed', 'error');
-      } finally {
-        togglePushBtn.disabled = false;
-        await checkAndUpdatePushState();
-      }
-    });
-  }
+      });
+    }
 
-  const testPushBtn = $('#btn-test-push');
-  if (testPushBtn) {
-    testPushBtn.addEventListener('click', async () => {
-      testPushBtn.disabled = true;
-      testPushBtn.textContent = 'Sending...';
-      try {
-        await api('/api/push/test', { method: 'POST' });
-        showToast('Test push notification triggered! Check your system notification tray.', 'success');
-      } catch (err) {
-        showToast(err.message || 'Could not send test notification. Ensure push is enabled first.', 'error');
-      } finally {
-        testPushBtn.disabled = false;
-        testPushBtn.textContent = 'Send Test Push Notification';
-      }
-    });
+    const testPushBtn = $('#btn-test-push');
+    if (testPushBtn) {
+      testPushBtn.addEventListener('click', async () => {
+        testPushBtn.disabled = true;
+        testPushBtn.textContent = 'Sending...';
+        try {
+          await api('/api/push/test', { method: 'POST' });
+          showToast('Test push notification triggered! Check your system notification tray.', 'success');
+        } catch (err) {
+          showToast(err.message || 'Could not send test notification. Ensure push is enabled first.', 'error');
+        } finally {
+          testPushBtn.disabled = false;
+          testPushBtn.textContent = 'Send Test Push Notification';
+        }
+      });
+    }
   }
 
   // Categories in Settings
@@ -6246,11 +6298,55 @@
     }
   }, 15 * 60 * 1000);
 
-  if ('serviceWorker' in navigator) {
+  // Service worker (web push + offline) is browser-only
+  if (!isCapacitorApp() && 'serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
 
   // ---------- Init ----------
 
-  tryRestore();
+  function initNativeRouting() {
+    if (!isCapacitorApp()) return false;
+    hideNativeDownloadCtas();
+    hideOnboarding();
+
+    // In native app, check localStorage for auth token
+    const token = localStorage.getItem('abt_token') || sessionStorage.getItem('abt_token');
+    if (token) {
+      // Token exists: show dashboard and set opacity back to 1
+      tryRestore().then((restored) => {
+        if (restored && authToken) {
+          switchView('dashboard');
+        } else {
+          if (appScreen) appScreen.classList.remove('active');
+          if (authScreen) authScreen.style.display = '';
+        }
+      }).catch(() => {
+        if (appScreen) appScreen.classList.remove('active');
+        if (authScreen) authScreen.style.display = '';
+      }).finally(() => {
+        hideNativeDownloadCtas();
+        revealNativePage();
+      });
+    } else {
+      // No token: show login view, never the landing page, and set opacity back to 1
+      if (appScreen) appScreen.classList.remove('active');
+      if (authScreen) authScreen.style.display = '';
+      revealNativePage();
+    }
+
+    // Safety net: never leave the native app invisible under any circumstance
+    setTimeout(revealNativePage, 2500);
+    return true;
+  }
+
+  function boot() {
+    if (!initNativeRouting()) tryRestore();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();
