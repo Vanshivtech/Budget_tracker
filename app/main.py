@@ -1477,6 +1477,7 @@ VALID_SCAN_CATEGORIES = {
     "entertainment": "Entertainment",
     "health": "Health",
     "education": "Education",
+    "transfer": "Transfer",
     "other": "Other",
 }
 
@@ -1518,32 +1519,165 @@ def _validate_scan_image(file: UploadFile, content: bytes) -> tuple[bool, str, s
 
 def _build_vision_scan_prompt(today_date: str) -> str:
     return (
-        "You are a financial transaction extractor. \n"
-        "Look at this image and extract transaction details.\n"
-        "The image may be a UPI payment screenshot, bank SMS \n"
-        "screenshot, food delivery bill, e-commerce order, \n"
-        "or any payment receipt.\n\n"
-        "Respond ONLY with a JSON object, no other text:\n"
+        "You are a financial transaction extractor for an Indian\n"
+        "personal finance app. Look at this image carefully.\n\n"
+        "It may show:\n"
+        "1. A single payment confirmation screen\n"
+        "2. A list of multiple transactions (like a bank/UPI history)\n\n"
+        "If it shows MULTIPLE transactions, extract ALL of them.\n"
+        "Navi app format: merchant name on left, amount on right,\n"
+        "UPI ID below merchant name, date and time below that.\n"
+        "Debit transactions show plain ₹amount.\n"
+        "Credit transactions show +₹amount in green.\n\n"
+        "Additional Indian fintech app formats:\n"
+        '- Navi: amount shown as "₹X,XXX" with green color,\n'
+        '  merchant shown as "To: [name]" or "Paid to [name]"\n'
+        '- PhonePe: "Paid ₹X to [name]"\n'
+        '- Google Pay: "You paid ₹X to [name]"\n'
+        '- BHIM: "Transaction of ₹X"\n'
+        '- Paytm: "₹X paid to [merchant]"\n'
+        '- Bank apps: "Debit of ₹X", "Dr ₹X"\n\n'
+        "Respond ONLY with valid JSON, no other text:\n"
         "{\n"
-        '  "found": true/false,\n'
-        '  "amount": number or null,\n'
-        '  "merchant": "string or null",\n'
-        '  "date": "YYYY-MM-DD or null",\n'
-        '  "category": "one of: Food, Transport, Shopping, \n'
-        "               Bills, Entertainment, Health, \n"
-        '               Education, Other",\n'
-        '  "confidence": "high/medium/low",\n'
-        '  "raw_text": "any text you could read from image"\n'
+        '  "type": "single" or "list",\n'
+        '  "found": true or false,\n'
+        '  "transactions": [\n'
+        "    {\n"
+        '      "amount": number (positive for debit, negative for credit),\n'
+        '      "merchant": "merchant name or person name",\n'
+        '      "upi_id": "upi id if visible",\n'
+        '      "date": "YYYY-MM-DD",\n'
+        '      "time": "HH:MM if visible",\n'
+        '      "type": "debit" or "credit",\n'
+        '      "category": "best guess from: Food, Transport,\n'
+        "                   Shopping, Bills, Entertainment,\n"
+        '                   Health, Education, Transfer, Other",\n'
+        '      "confidence": "high/medium/low"\n'
+        "    }\n"
+        "  ],\n"
+        '  "raw_text": "key text you could read"\n'
         "}\n\n"
-        "If no transaction found, return found: false.\n"
-        f"For date, use today if unclear: {today_date}.\n"
-        "For Indian UPI: merchant is the UPI ID name or \n"
-        "the recipient name shown."
+        "For Navi transaction history:\n"
+        "- Merchant is the person/business name in bold\n"
+        "- Amount is on the right side\n"
+        "- UPI shows below merchant name\n"
+        "- Date format: 'Yesterday', 'X Nov 2026' etc\n"
+        "- Convert relative dates like 'Yesterday' to actual date\n"
+        f"  based on today being {today_date}\n"
+        "- Skip credit transactions (shown with + prefix) unless\n"
+        "  amount is significant (>100)\n"
+        "- Max 20 transactions per image"
     )
 
 
+def _normalize_scan_date(raw_date: Any, today_date: str) -> str:
+    """Normalize YYYY-MM-DD or relative date strings like 'Yesterday' / '12 Nov 2026'."""
+    if not raw_date or not isinstance(raw_date, str):
+        return today_date
+    s = raw_date.strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    lower_s = s.lower()
+    try:
+        base_dt = d_date.fromisoformat(today_date)
+    except ValueError:
+        base_dt = d_date.today()
+    if lower_s == "today":
+        return base_dt.isoformat()
+    if lower_s == "yesterday":
+        return (base_dt - timedelta(days=1)).isoformat()
+    for fmt in ("%d %b %Y", "%d %B %Y", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %b %y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return today_date
+
+
+def _parse_single_tx_item(item: dict, today_date: str) -> dict | None:
+    """Validate and normalize a single extracted transaction object."""
+    if not isinstance(item, dict):
+        return None
+
+    raw_amt = item.get("amount")
+    if raw_amt is None:
+        return None
+
+    tx_type = str(item.get("type") or "debit").strip().lower()
+    if tx_type not in ("debit", "credit"):
+        tx_type = "debit"
+
+    try:
+        amt_str = str(raw_amt).replace(",", "").replace("₹", "").replace(" ", "").strip()
+        if amt_str.startswith("+"):
+            tx_type = "credit"
+        val = float(amt_str)
+    except (ValueError, TypeError):
+        return None
+
+    if val == 0:
+        return None
+    if val < 0:
+        tx_type = "credit"
+
+    abs_val = abs(val)
+    # Skip credit transactions unless amount is significant (>100)
+    if tx_type == "credit" and abs_val <= 100:
+        return None
+
+    signed_amt = -abs_val if tx_type == "credit" else abs_val
+    clean_amt = int(signed_amt) if signed_amt == int(signed_amt) else round(signed_amt, 2)
+
+    merchant = item.get("merchant")
+    if isinstance(merchant, str):
+        merchant = merchant.strip() or None
+    else:
+        merchant = None
+
+    upi_id = item.get("upi_id")
+    if isinstance(upi_id, str):
+        upi_id = upi_id.strip() or None
+    else:
+        upi_id = None
+
+    date_str = _normalize_scan_date(item.get("date"), today_date)
+
+    time_str = item.get("time")
+    if isinstance(time_str, str):
+        time_str = time_str.strip() or None
+    else:
+        time_str = None
+
+    raw_cat = str(item.get("category") or "Other").strip().lower()
+    category = VALID_SCAN_CATEGORIES.get(raw_cat, "Other")
+
+    conf = str(item.get("confidence") or "medium").strip().lower()
+    if conf not in ("high", "medium", "low"):
+        conf = "medium"
+
+    if merchant:
+        if category in ("Food", "Shopping"):
+            suggested_note = f"{merchant} order"
+        else:
+            suggested_note = f"{merchant} payment"
+    else:
+        suggested_note = f"{category} expense"
+
+    return {
+        "amount": clean_amt,
+        "merchant": merchant,
+        "upi_id": upi_id,
+        "date": date_str,
+        "time": time_str,
+        "type": tx_type,
+        "category": category,
+        "confidence": conf,
+        "suggested_note": suggested_note,
+    }
+
+
 def _parse_vision_json(raw_output: str, today_date: str) -> dict:
-    """Parse and normalize JSON returned by the Groq vision model."""
+    """Parse and normalize JSON returned by the Groq vision model (single or list)."""
     cleaned = (raw_output or "").strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
@@ -1558,66 +1692,78 @@ def _parse_vision_json(raw_output: str, today_date: str) -> dict:
         raise ValueError("Vision output is not a JSON object")
 
     found = bool(data.get("found"))
-    raw_amt = data.get("amount")
-    amount = None
-    if raw_amt is not None:
-        try:
-            val = float(str(raw_amt).replace(",", "").replace("₹", "").strip())
-            if val > 0:
-                amount = int(val) if val == int(val) else round(val, 2)
-        except (ValueError, TypeError):
-            amount = None
+    raw_text = str(data.get("raw_text") or "").strip()
 
-    if not found or amount is None:
+    raw_txs = data.get("transactions")
+    if not isinstance(raw_txs, list):
+        # Fallback if model returned flat single-transaction fields
+        if data.get("amount") is not None:
+            raw_txs = [data]
+        else:
+            raw_txs = []
+
+    parsed_txs = []
+    for item in raw_txs[:20]:
+        norm_item = _parse_single_tx_item(item, today_date)
+        if norm_item is not None:
+            parsed_txs.append(norm_item)
+
+    if not found or not parsed_txs:
         return {
             "found": False,
+            "type": "single",
+            "transaction": None,
+            "transactions": [],
+            "count": 0,
+            "confidence": str(data.get("confidence") or "low").lower(),
             "amount": None,
             "merchant": None,
             "date": None,
             "category": None,
-            "confidence": str(data.get("confidence") or "low").lower(),
-            "raw_text": str(data.get("raw_text") or ""),
+            "raw_text": raw_text,
             "suggested_note": None,
         }
 
-    merchant = data.get("merchant")
-    if isinstance(merchant, str):
-        merchant = merchant.strip() or None
+    declared_type = str(data.get("type") or "").strip().lower()
+    if len(parsed_txs) > 1 or declared_type == "list":
+        scan_type = "list" if len(parsed_txs) > 1 else ("list" if declared_type == "list" else "single")
     else:
-        merchant = None
+        scan_type = "single"
 
-    date_str = data.get("date")
-    if isinstance(date_str, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", date_str.strip()):
-        date_str = date_str.strip()
-    else:
-        date_str = today_date
+    # Overall confidence: use first item's confidence or top-level confidence
+    overall_conf = str(data.get("confidence") or parsed_txs[0].get("confidence") or "high").strip().lower()
+    if overall_conf not in ("high", "medium", "low"):
+        overall_conf = parsed_txs[0].get("confidence", "medium")
 
-    raw_cat = str(data.get("category") or "Other").strip().lower()
-    category = VALID_SCAN_CATEGORIES.get(raw_cat, "Other")
+    first_tx = parsed_txs[0]
 
-    conf = str(data.get("confidence") or "medium").strip().lower()
-    if conf not in ("high", "medium", "low"):
-        conf = "medium"
-
-    raw_text = str(data.get("raw_text") or "").strip()
-
-    if merchant:
-        if category in ("Food", "Shopping"):
-            suggested_note = f"{merchant} order"
-        else:
-            suggested_note = f"{merchant} payment"
-    else:
-        suggested_note = f"{category} expense"
+    if scan_type == "single":
+        return {
+            "found": True,
+            "type": "single",
+            "transaction": first_tx,
+            "transactions": parsed_txs,
+            "count": 1,
+            "confidence": first_tx["confidence"],
+            # Backward-compatible top-level single transaction fields
+            "amount": abs(first_tx["amount"]),
+            "merchant": first_tx["merchant"],
+            "upi_id": first_tx.get("upi_id"),
+            "date": first_tx["date"],
+            "time": first_tx.get("time"),
+            "category": first_tx["category"],
+            "raw_text": raw_text,
+            "suggested_note": first_tx["suggested_note"],
+        }
 
     return {
         "found": True,
-        "amount": amount,
-        "merchant": merchant,
-        "date": date_str,
-        "category": category,
-        "confidence": conf,
+        "type": "list",
+        "transaction": first_tx,
+        "transactions": parsed_txs,
+        "count": len(parsed_txs),
+        "confidence": overall_conf,
         "raw_text": raw_text,
-        "suggested_note": suggested_note,
     }
 
 

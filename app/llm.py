@@ -250,6 +250,7 @@ class LLMPool:
         image_base64: str,
         prompt: str,
         mime_type: str = "image/jpeg",
+        max_tokens: int = 2048,
     ) -> str:
         """Send a vision request to Groq using multi-key failover.
 
@@ -305,7 +306,7 @@ class LLMPool:
                         model=model_name,
                         api_key=slot.key,
                         temperature=0.1,
-                        max_tokens=1024,
+                        max_tokens=max(500, max_tokens),
                     )
                     response = vision_llm.invoke([message])
                     content = getattr(response, "content", None)
