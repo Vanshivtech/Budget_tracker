@@ -6,11 +6,12 @@ Run from the project root:
     uvicorn app.main:app --reload
 """
 import asyncio
+import base64
 import calendar
 import json
 import logging
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as d_date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,33 +24,32 @@ from pydantic import BaseModel, field_validator
 
 from app.config import settings
 from app.db import (
-    init_db, get_summary, create_user, get_user_by_email, get_user_by_id,
-    get_udhar_summary, add_udhar, record_udhar_repayment,
+    init_db, get_db_cursor, get_summary, create_user, get_user_by_email, get_user_by_id,
+    get_udhar_summary, add_udhar, record_udhar_repayment, get_linked_udhar_entries,
     get_dashboard, save_chat_message, get_chat_history,
     get_goals, set_savings_goal, contribute_to_goal,
     get_financial_snapshot, get_insights, get_weekly_recap,
     get_logging_streak, add_income_entry, get_income_summary,
     get_user_profile, update_user_profile,
     VALID_LIVING_SITUATIONS, sanitize_living_situation,
-    suggest_budget_defaults, has_completed_onboarding, complete_onboarding,
+    suggest_budget_defaults, has_completed_onboarding, get_onboarding_status, complete_onboarding,
     add_recurring_expense, get_recurring_expenses, deactivate_recurring_expense,
     check_and_process_recurring_reminders, get_effective_budgets, set_category_rollover,
-    compute_health_score, split_expense, generate_monthly_excel, generate_monthly_pdf,
+    compute_health_score, split_expense,
     current_month, spend_by_category,
-    # New functions
-    set_username, set_avatar, get_user_display, set_user_avatar_url, get_dashboard_tier2,
+    # User & Categories
+    set_username, set_avatar, get_user_display, set_user_avatar_url, search_users_by_username,
+    get_dashboard_tier2,
     add_user_category, remove_user_category, get_all_categories, get_user_categories,
     add_transaction_tag, remove_transaction_tag, get_all_user_tags,
     add_merchant_alias, search_transactions, get_dashboard_ranged,
     clear_transactions, clear_udhar, clear_everything, delete_account,
-    export_all_data_json, get_undo_status, execute_undo, store_undo_state, get_transaction_by_id,
+    export_all_data_json, get_transaction_by_id, get_recent_top_categories,
     # Tier 3 additions
-    add_receipt, get_receipts, get_receipt_by_id, delete_receipt, get_transaction_receipts,
-    get_cached_merchant_category, set_cached_merchant_category, get_past_merchant_category,
-    get_udhar_reminder_data, get_cashflow_calendar, get_overspending_projections,
+    get_udhar_reminder_data, get_cashflow_calendar,
     save_push_subscription, save_fcm_token, get_user_push_subscriptions, remove_push_subscription, clear_all_push_subscriptions,
     check_and_record_notification, normalize_merchant, check_duplicate_expense,
-    log_transaction,
+    log_transaction, increment_scan_count, get_scan_usage_stats,
     # Engagement Notification System
     get_users_for_engagement_notifications, log_engagement_notification,
     has_engagement_notification_today, has_engagement_type_within_days, has_budget_alert_today,
@@ -59,7 +59,7 @@ from app.db import (
     get_user_today_message_count, get_admin_dashboard_stats, get_admin_users, get_admin_user_detail,
     get_admin_llm_usage, get_admin_table_overview, get_admin_table_rows,
     # Manual Entry & Management additions
-    update_expense, delete_expense, bulk_delete_expenses, set_budget, delete_budget, get_budgets_manager,
+    update_expense, delete_expense, set_budget, delete_budget, get_budgets_manager,
     update_udhar_entry, delete_udhar_entry, resolve_udhar_due_date,
     update_savings_goal, delete_savings_goal,
     update_recurring_expense, delete_recurring_expense, toggle_recurring_expense,
@@ -78,15 +78,6 @@ from app.email import (
 )
 from app.agent import handle_user_message, clear_user_agent_sessions
 from app.llm import llm_pool
-from app.storage import (
-    validate_file_content, upload_to_storage, get_storage_path,
-    delete_from_storage, get_signed_url, get_file_bytes, ocr_receipt_hook,
-    validate_avatar_file,
-)
-from app.importer import (
-    parse_csv_content, parse_plain_text_statements, categorize_by_rule,
-    batch_llm_categorize, MAX_FILE_BYTES, MAX_ROWS,
-)
 from app.push import send_web_push, send_engagement_notification, send_push_to_user, send_fcm_notification
 from pywebpush import webpush, WebPushException
 from app.scheduler import (
@@ -253,8 +244,8 @@ def _set_refresh_token_cookie(response: Response, refresh_token: str):
         httponly=True,
         secure=True,
         samesite="None",
-        domain=COOKIE_DOMAIN,
-        max_age=30 * 24 * 60 * 60,
+        domain=".saarthh.in",
+        max_age=2592000,
         path="/",
     )
 
@@ -262,7 +253,7 @@ def _set_refresh_token_cookie(response: Response, refresh_token: str):
 def _delete_refresh_token_cookie(response: Response):
     response.delete_cookie(
         key="refresh_token",
-        domain=COOKIE_DOMAIN,
+        domain=".saarthh.in",
         path="/",
         httponly=True,
         secure=True,
@@ -286,7 +277,9 @@ class AuthRequest(BaseModel):
 
 
 class AuthResponse(BaseModel):
+    access_token: str = ""
     token: str = ""
+    expires_in: int = 2592000
     user: dict = {}
     requires_verification: bool = False
     message: str | None = None
@@ -325,6 +318,18 @@ class TransactionCreateRequest(BaseModel):
     merchant: str | None = None
 
 
+class BatchExpenseItem(BaseModel):
+    amount: Any
+    category: Any
+    note: str | None = ""
+    date: str | None = None
+    merchant: str | None = None
+
+
+class BatchTransactionsRequest(BaseModel):
+    expenses: list[BatchExpenseItem]
+
+
 class TransactionUpdateRequest(BaseModel):
     amount: float | None = None
     category: str | None = None
@@ -334,8 +339,13 @@ class TransactionUpdateRequest(BaseModel):
     merchant: str | None = None
 
 
-class TransactionBulkDeleteRequest(BaseModel):
-    transaction_ids: list[int]
+class ScanConfirmRequest(BaseModel):
+    amount: float
+    merchant: str | None = None
+    date: str | None = None
+    category: str
+    note: str | None = None
+    source: str = "scan"
 
 
 class BudgetCreateRequest(BaseModel):
@@ -356,6 +366,7 @@ class UdharAddRequest(BaseModel):
     note: str = ""
     date: str | None = None
     due_date: str | None = None
+    linked_user_id: int | None = None
 
 
 class UdharUpdateRequest(BaseModel):
@@ -400,6 +411,7 @@ class RecurringUpdateRequest(BaseModel):
 class IncomeRequest(BaseModel):
     amount: float
     source: str = "salary"
+    date: str | None = None
     entry_date: str | None = None
 
 
@@ -421,13 +433,13 @@ class ProfileUpdateRequest(BaseModel):
 class OnboardingCategoryItem(BaseModel):
     name: str
     amount: float
-    enabled: bool
+    enabled: bool = True
 
 
 class OnboardingCompleteRequest(BaseModel):
-    living_situation: str
+    living_situation: str = "alone"
     monthly_income: float | None = None
-    categories: list[OnboardingCategoryItem]
+    categories: list[OnboardingCategoryItem] = []
 
     @field_validator("living_situation", mode="before")
     @classmethod
@@ -436,7 +448,7 @@ class OnboardingCompleteRequest(BaseModel):
             sanitized = sanitize_living_situation(v)
             if sanitized:
                 return sanitized
-        return str(v) if v is not None else ""
+        return str(v) if v is not None else "alone"
 
 
 class RecurringAddRequest(BaseModel):
@@ -499,25 +511,6 @@ class ClearConfirmRequest(BaseModel):
 class DeleteAccountRequest(BaseModel):
     confirmation: str
     export_token: str | None = None
-
-
-class PasteImportRequest(BaseModel):
-    text: str
-    column_mapping: dict | None = None
-
-
-class ConfirmImportRow(BaseModel):
-    date: str
-    amount: float
-    category: str
-    note: str = ""
-    merchant: str | None = None
-    is_credit: bool = False
-    import_credit: bool = False
-
-
-class ConfirmImportRequest(BaseModel):
-    rows: list[ConfirmImportRow]
 
 
 class PushSubscribeRequest(BaseModel):
@@ -619,8 +612,14 @@ def signup(req: AuthRequest, response: Response):
         pw_hash = hash_password(req.password)
         update_user_password(existing["id"], pw_hash)
         send_otp_email(email, otp)
+        token = create_access_token(existing["id"], email)
+        refresh_token = create_refresh_token(existing["id"], email)
+        _set_refresh_token_cookie(response, refresh_token)
         return AuthResponse(
-            token="",
+            access_token=token,
+            token=token,
+            expires_in=2592000,
+            refresh_token=refresh_token,
             user={"id": existing["id"], "email": email},
             requires_verification=True,
             message="Verification code sent to your email. Please verify your account.",
@@ -640,7 +639,7 @@ def signup(req: AuthRequest, response: Response):
         token = create_access_token(user["id"], user["email"])
         refresh_token = create_refresh_token(user["id"], user["email"])
         _set_refresh_token_cookie(response, refresh_token)
-        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain=.saarthh.in, SameSite=None, Secure=True)")
         if req.username and req.username.strip():
             try:
                 set_username(user["id"], req.username.strip())
@@ -648,7 +647,9 @@ def signup(req: AuthRequest, response: Response):
                 pass
         user_display = get_user_display(user["id"])
         return AuthResponse(
+            access_token=token,
             token=token,
+            expires_in=2592000,
             refresh_token=refresh_token,
             user={
                 "id": user["id"],
@@ -679,9 +680,22 @@ def signup(req: AuthRequest, response: Response):
             pass
 
     send_otp_email(email, otp)
+    token = create_access_token(user["id"], user["email"])
+    refresh_token = create_refresh_token(user["id"], user["email"])
+    _set_refresh_token_cookie(response, refresh_token)
+    user_display = get_user_display(user["id"])
     return AuthResponse(
-        token="",
-        user={"id": user["id"], "email": user["email"]},
+        access_token=token,
+        token=token,
+        expires_in=2592000,
+        refresh_token=refresh_token,
+        user={
+            "id": user["id"],
+            "email": user["email"],
+            "username": user_display.get("username"),
+            "avatar_id": user_display.get("avatar_id", 1),
+            "needs_username": user_display.get("needs_username", True),
+        },
         requires_verification=True,
         message="Verification code sent to your email. Please verify your account before logging in.",
     )
@@ -717,12 +731,14 @@ def login(req: AuthRequest, response: Response):
     refresh_token = create_refresh_token(user["id"], user["email"])
 
     _set_refresh_token_cookie(response, refresh_token)
-    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain=.saarthh.in, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
 
     return AuthResponse(
+        access_token=token,
         token=token,
+        expires_in=2592000,
         refresh_token=refresh_token,
         user={
             "id": user["id"],
@@ -780,12 +796,14 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
         token = create_access_token(user["id"], user["email"])
         refresh_token = create_refresh_token(user["id"], user["email"])
         _set_refresh_token_cookie(response, refresh_token)
-        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
+        _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain=.saarthh.in, SameSite=None, Secure=True)")
         user_display = get_user_display(user["id"])
         return {
             "status": "ok",
             "message": "Email is already verified.",
+            "access_token": token,
             "token": token,
+            "expires_in": 2592000,
             "refresh_token": refresh_token,
             "user": user_display,
         }
@@ -813,13 +831,15 @@ def verify_otp_endpoint(req: VerifyOtpRequest, response: Response):
     refresh_token = create_refresh_token(user["id"], user["email"])
 
     _set_refresh_token_cookie(response, refresh_token)
-    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
+    _safe_print(f"🍪 [AUTH] Set refresh_token cookie for user {user['id']} (domain=.saarthh.in, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
         "status": "ok",
         "message": "Email verified successfully.",
+        "access_token": token,
         "token": token,
+        "expires_in": 2592000,
         "refresh_token": refresh_token,
         "user": {
             "id": user["id"],
@@ -839,7 +859,7 @@ def refresh_token_endpoint(
     response: Response,
     req: RefreshTokenRequest | None = None,
 ):
-    """Validate refresh token and rotate with new access token and refresh token."""
+    """Validate refresh token from HttpOnly cookie and rotate with new access token and 30-day refresh cookie."""
     _safe_print(f"🔄 [REFRESH] Received cookies: {dict(request.cookies)}, origin: {request.headers.get('origin')}")
     token = request.cookies.get("refresh_token")
     if not token and req and req.refresh_token:
@@ -883,12 +903,13 @@ def refresh_token_endpoint(
     new_refresh_token = create_refresh_token(user["id"], user["email"])
 
     _set_refresh_token_cookie(response, new_refresh_token)
-    _safe_print(f"🍪 [REFRESH] Rotated refresh_token cookie for user {user['id']} (domain={COOKIE_DOMAIN}, SameSite=None, Secure=True)")
+    _safe_print(f"🍪 [REFRESH] Rotated refresh_token cookie for user {user['id']} (domain=.saarthh.in, SameSite=None, Secure=True)")
 
     user_display = get_user_display(user["id"])
     return {
-        "token": new_access_token,
         "access_token": new_access_token,
+        "expires_in": 2592000,
+        "token": new_access_token,
         "refresh_token": new_refresh_token,
         "user": {
             "id": user["id"],
@@ -1053,7 +1074,7 @@ def dashboard(
     data = get_dashboard_ranged(user_id=user["id"], start_date=sd, end_date=ed)
     data["user_id"] = user["id"]
     if tier == "full":
-        data["projections"] = get_overspending_projections(user["id"])
+        data["projections"] = []
     return data
 
 
@@ -1082,6 +1103,12 @@ def udhar_list(user: dict = Depends(get_current_user)):
     return data
 
 
+@app.get("/api/udhar/linked")
+def udhar_linked_list(user: dict = Depends(get_current_user)):
+    """Return udhar entries where current user is linked_user_id (debts other users have recorded involving them)."""
+    return get_linked_udhar_entries(user_id=user["id"])
+
+
 @app.post("/api/udhar")
 def udhar_add(req: UdharAddRequest, user: dict = Depends(get_current_user)):
     """Add a new udhar entry (lent, borrowed, received_back, paid_back)."""
@@ -1092,6 +1119,14 @@ def udhar_add(req: UdharAddRequest, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="amount must be positive")
     if not req.person_name.strip():
         raise HTTPException(status_code=400, detail="person_name is required")
+
+    linked_uid = None
+    if req.linked_user_id is not None:
+        linked_user = get_user_by_id(int(req.linked_user_id))
+        if not linked_user:
+            raise HTTPException(status_code=404, detail="Linked user not found")
+        linked_uid = int(req.linked_user_id)
+
     entry = add_udhar(
         user_id=user["id"],
         person_name=req.person_name.strip(),
@@ -1100,6 +1135,7 @@ def udhar_add(req: UdharAddRequest, user: dict = Depends(get_current_user)):
         note=req.note,
         due_date=req.due_date,
         entry_date=req.date,
+        linked_user_id=linked_uid,
     )
     return entry
 
@@ -1134,9 +1170,24 @@ def udhar_delete(entry_id: int, user: dict = Depends(get_current_user)):
 @app.post("/api/udhar/{entry_id}/resolve")
 def udhar_resolve(entry_id: int, user: dict = Depends(get_current_user)):
     """Resolve due date for an udhar entry, clearing overdue highlight."""
-    ok = resolve_udhar_due_date(user_id=user["id"], entry_id=entry_id)
-    if not ok:
+    resolved = resolve_udhar_due_date(user_id=user["id"], entry_id=entry_id)
+    if not resolved:
         raise HTTPException(status_code=404, detail="Udhar entry not found")
+
+    linked_uid = resolved.get("linked_user_id")
+    if linked_uid:
+        try:
+            display = get_user_display(user["id"])
+            uname = display.get("username") or user.get("username") or user.get("email", "").split("@")[0] or "A user"
+            send_push_to_user(
+                user_id=int(linked_uid),
+                title="SAARTH Udhar Update",
+                body=f"{uname} marked a debt as settled",
+                url="/udhar",
+            )
+        except Exception as e:
+            logger.error(f"Error sending push notification to linked user {linked_uid}: {e}")
+
     return {"status": "ok", "resolved_id": entry_id, "summary": get_udhar_summary(user["id"])}
 
 
@@ -1257,7 +1308,7 @@ def log_income(req: IncomeRequest, user: dict = Depends(get_current_user)):
         user_id=user["id"],
         amount=req.amount,
         source=req.source,
-        entry_date=req.entry_date,
+        entry_date=req.date or req.entry_date,
     )
 
 
@@ -1288,7 +1339,16 @@ def profile_update(req: ProfileUpdateRequest, user: dict = Depends(get_current_u
     )
 
 
-# ---------- User Settings: Username & Avatar ----------
+# ---------- User Settings: Username, Search & Avatar ----------
+
+@app.get("/api/users/search")
+def users_search(
+    q: str = Query(""),
+    user: dict = Depends(get_current_user),
+):
+    """Case-insensitive partial match on username field, excluding requesting user (max 10 results)."""
+    return search_users_by_username(query=q, exclude_user_id=user["id"], limit=10)
+
 
 @app.get("/api/user/display")
 def user_display(user: dict = Depends(get_current_user)):
@@ -1318,50 +1378,22 @@ async def user_avatar_upload(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user)
 ):
-    """Upload custom avatar profile photo (JPG or PNG, max 2MB)."""
-    if not settings.SUPABASE_SERVICE_ROLE_KEY or not settings.get_supabase_url():
-        raise HTTPException(
-            status_code=503,
-            detail="Photo upload requires cloud storage to be configured"
-        )
-
-    content = await file.read()
-    is_valid, mime, ext, err_msg = validate_avatar_file(content)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=err_msg)
-
-    storage_path = f"avatars/{user['id']}/profile.{ext}"
-    uploaded = upload_to_storage(storage_path, content, mime)
-    if not uploaded:
-        raise HTTPException(status_code=500, detail="Failed to upload avatar photo to storage")
-
-    set_user_avatar_url(user["id"], storage_path)
-    signed_url = get_signed_url(storage_path, expires_in_seconds=3600)
-    return {
-        "status": "ok",
-        "avatar_url": storage_path,
-        "signed_url": signed_url,
-    }
+    """Upload custom avatar profile photo."""
+    raise HTTPException(
+        status_code=503,
+        detail="Photo upload requires cloud storage to be configured"
+    )
 
 
 @app.get("/api/user/avatar-url")
 def user_avatar_url(user: dict = Depends(get_current_user)):
     """Get signed URL for user's uploaded avatar photo, or null if using preset icon."""
-    user_info = get_user_display(user["id"])
-    path = user_info.get("avatar_url")
-    if not path:
-        return {"signed_url": None}
-    signed_url = get_signed_url(path, expires_in_seconds=3600)
-    return {"signed_url": signed_url}
+    return {"signed_url": None}
 
 
 @app.delete("/api/user/avatar-photo")
 def user_remove_avatar_photo(user: dict = Depends(get_current_user)):
     """Remove user's uploaded avatar photo and revert to preset icon."""
-    user_info = get_user_display(user["id"])
-    path = user_info.get("avatar_url")
-    if path:
-        delete_from_storage(path)
     set_user_avatar_url(user["id"], None)
     return {"status": "ok"}
 
@@ -1420,6 +1452,360 @@ def tags_list(user: dict = Depends(get_current_user)):
 
 # ---------- Transaction Manual Entry, Search & Management ----------
 
+@app.get("/api/transactions/recent-categories")
+def transactions_recent_categories(user: dict = Depends(get_current_user)):
+    """Return the 5 most frequently used categories by this user in the last 30 days."""
+    return {"categories": get_recent_top_categories(user_id=user["id"], days=30, limit=5)}
+
+
+# ---------- Groq Vision Receipt / Screenshot Scanning ----------
+
+MAX_SCAN_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+ALLOWED_SCAN_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+ALLOWED_SCAN_MIMES = {
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+}
+VALID_SCAN_CATEGORIES = {
+    "food": "Food",
+    "transport": "Transport",
+    "shopping": "Shopping",
+    "bills": "Bills",
+    "entertainment": "Entertainment",
+    "health": "Health",
+    "education": "Education",
+    "other": "Other",
+}
+
+
+def _validate_scan_image(file: UploadFile, content: bytes) -> tuple[bool, str, str]:
+    """Validate uploaded image format (jpg, jpeg, png, webp, gif) and size (max 10MB).
+    Returns (is_valid, mime_type, error_message).
+    """
+    if not content:
+        return False, "", "Empty image file"
+    if len(content) > MAX_SCAN_IMAGE_BYTES:
+        return False, "", "Image exceeds maximum size of 10MB"
+
+    filename = (file.filename or "").lower().strip()
+    ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+    content_type = (file.content_type or "").lower().strip()
+
+    # Check magic bytes first
+    mime = ""
+    if content.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif content.startswith((b"GIF87a", b"GIF89a")):
+        mime = "image/gif"
+    elif len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        mime = "image/webp"
+
+    if not mime:
+        if ext in ALLOWED_SCAN_EXTENSIONS:
+            mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+        elif content_type in ALLOWED_SCAN_MIMES:
+            mime = "image/jpeg" if content_type == "image/jpg" else content_type
+        else:
+            return False, "", "Unsupported image format. Supported formats: jpg, jpeg, png, webp, gif"
+
+    return True, mime, ""
+
+
+def _build_vision_scan_prompt(today_date: str) -> str:
+    return (
+        "You are a financial transaction extractor. \n"
+        "Look at this image and extract transaction details.\n"
+        "The image may be a UPI payment screenshot, bank SMS \n"
+        "screenshot, food delivery bill, e-commerce order, \n"
+        "or any payment receipt.\n\n"
+        "Respond ONLY with a JSON object, no other text:\n"
+        "{\n"
+        '  "found": true/false,\n'
+        '  "amount": number or null,\n'
+        '  "merchant": "string or null",\n'
+        '  "date": "YYYY-MM-DD or null",\n'
+        '  "category": "one of: Food, Transport, Shopping, \n'
+        "               Bills, Entertainment, Health, \n"
+        '               Education, Other",\n'
+        '  "confidence": "high/medium/low",\n'
+        '  "raw_text": "any text you could read from image"\n'
+        "}\n\n"
+        "If no transaction found, return found: false.\n"
+        f"For date, use today if unclear: {today_date}.\n"
+        "For Indian UPI: merchant is the UPI ID name or \n"
+        "the recipient name shown."
+    )
+
+
+def _parse_vision_json(raw_output: str, today_date: str) -> dict:
+    """Parse and normalize JSON returned by the Groq vision model."""
+    cleaned = (raw_output or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if match:
+        cleaned = match.group(0)
+
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("Vision output is not a JSON object")
+
+    found = bool(data.get("found"))
+    raw_amt = data.get("amount")
+    amount = None
+    if raw_amt is not None:
+        try:
+            val = float(str(raw_amt).replace(",", "").replace("₹", "").strip())
+            if val > 0:
+                amount = int(val) if val == int(val) else round(val, 2)
+        except (ValueError, TypeError):
+            amount = None
+
+    if not found or amount is None:
+        return {
+            "found": False,
+            "amount": None,
+            "merchant": None,
+            "date": None,
+            "category": None,
+            "confidence": str(data.get("confidence") or "low").lower(),
+            "raw_text": str(data.get("raw_text") or ""),
+            "suggested_note": None,
+        }
+
+    merchant = data.get("merchant")
+    if isinstance(merchant, str):
+        merchant = merchant.strip() or None
+    else:
+        merchant = None
+
+    date_str = data.get("date")
+    if isinstance(date_str, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", date_str.strip()):
+        date_str = date_str.strip()
+    else:
+        date_str = today_date
+
+    raw_cat = str(data.get("category") or "Other").strip().lower()
+    category = VALID_SCAN_CATEGORIES.get(raw_cat, "Other")
+
+    conf = str(data.get("confidence") or "medium").strip().lower()
+    if conf not in ("high", "medium", "low"):
+        conf = "medium"
+
+    raw_text = str(data.get("raw_text") or "").strip()
+
+    if merchant:
+        if category in ("Food", "Shopping"):
+            suggested_note = f"{merchant} order"
+        else:
+            suggested_note = f"{merchant} payment"
+    else:
+        suggested_note = f"{category} expense"
+
+    return {
+        "found": True,
+        "amount": amount,
+        "merchant": merchant,
+        "date": date_str,
+        "category": category,
+        "confidence": conf,
+        "raw_text": raw_text,
+        "suggested_note": suggested_note,
+    }
+
+
+@app.post("/api/transactions/scan")
+async def transaction_scan(
+    image: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Scan a single receipt/screenshot image using Groq vision and extract transaction details."""
+    try:
+        content = await image.read()
+    except Exception as e:
+        log_server_error("/api/transactions/scan", f"FileReadError: {str(e)}")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Could not process image, please try again"},
+        )
+
+    is_valid, mime_type, err_msg = _validate_scan_image(image, content)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    increment_scan_count(1)
+    today_str = d_date.today().isoformat()
+    prompt = _build_vision_scan_prompt(today_str)
+    image_b64 = base64.b64encode(content).decode("utf-8")
+
+    try:
+        raw_response = llm_pool.invoke_vision(
+            image_base64=image_b64,
+            prompt=prompt,
+            mime_type=mime_type,
+        )
+        extracted = _parse_vision_json(raw_response, today_str)
+    except Exception as e:
+        logger.exception("Groq vision scan failed")
+        try:
+            log_server_error("/api/transactions/scan", f"{type(e).__name__}: {str(e)}")
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Could not process image, please try again"},
+        )
+
+    if not extracted.get("found"):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "found": False,
+                "detail": "No transaction found in this image",
+                "message": "No transaction found in this image",
+            },
+        )
+
+    return extracted
+
+
+@app.post("/api/transactions/scan-bulk")
+async def transaction_scan_bulk(
+    images: list[UploadFile] = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Scan up to 10 receipt/screenshot images sequentially using Groq vision."""
+    if not images:
+        raise HTTPException(status_code=400, detail="No images provided")
+    if len(images) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 images allowed per bulk scan")
+
+    today_str = d_date.today().isoformat()
+    prompt = _build_vision_scan_prompt(today_str)
+
+    results = []
+    found_count = 0
+    not_found_count = 0
+
+    for idx, img in enumerate(images):
+        try:
+            content = await img.read()
+            is_valid, mime_type, err_msg = _validate_scan_image(img, content)
+            if not is_valid:
+                not_found_count += 1
+                results.append({
+                    "index": idx,
+                    "found": False,
+                    "error": True,
+                    "detail": err_msg,
+                })
+                continue
+
+            increment_scan_count(1)
+            image_b64 = base64.b64encode(content).decode("utf-8")
+            raw_response = llm_pool.invoke_vision(
+                image_base64=image_b64,
+                prompt=prompt,
+                mime_type=mime_type,
+            )
+            extracted = _parse_vision_json(raw_response, today_str)
+            if extracted.get("found"):
+                found_count += 1
+            else:
+                not_found_count += 1
+            results.append({
+                "index": idx,
+                **extracted,
+            })
+        except Exception as e:
+            logger.error(f"Bulk scan error at index {idx}: {e}")
+            try:
+                log_server_error("/api/transactions/scan-bulk", f"Index {idx} {type(e).__name__}: {str(e)}")
+            except Exception:
+                pass
+            not_found_count += 1
+            results.append({
+                "index": idx,
+                "found": False,
+                "error": True,
+                "detail": "Could not process image, please try again",
+            })
+
+    return {
+        "results": results,
+        "total": len(images),
+        "found": found_count,
+        "not_found": not_found_count,
+    }
+
+
+@app.post("/api/transactions/scan-confirm")
+def transaction_scan_confirm(
+    req: ScanConfirmRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Confirm and save a scanned transaction after checking for duplicates."""
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    if not req.category or not req.category.strip():
+        raise HTTPException(status_code=400, detail="category is required")
+
+    clean_cat = req.category.strip()
+    clean_merchant = req.merchant.strip() if req.merchant and req.merchant.strip() else None
+    clean_note = (req.note or "").strip()
+    if not clean_note and clean_merchant:
+        clean_note = f"{clean_merchant} order" if clean_cat.lower() in ("food", "shopping") else f"{clean_merchant} payment"
+
+    existing = check_duplicate_expense(
+        user_id=user["id"],
+        amount=req.amount,
+        category=clean_cat,
+        note=clean_note,
+        entry_date=req.date,
+    )
+    if existing:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Similar transaction already exists",
+                "existing": existing,
+            },
+        )
+
+    tx = log_transaction(
+        user_id=user["id"],
+        amount=req.amount,
+        category=clean_cat,
+        note=clean_note,
+        raw_message="scan",
+        merchant=clean_merchant,
+        entry_date=req.date,
+        source=req.source or "scan",
+    )
+    tx["tags"] = []
+
+    try:
+        check_budget_alerts(user["id"], tx["category"], tx["amount"])
+        check_large_expense(user["id"], tx["amount"], tx["category"], tx.get("merchant"))
+    except Exception as e:
+        logger.error(f"Error triggering push alerts on scan-confirm: {e}")
+
+    return tx
+
+
+@app.get("/api/stats/scan-usage")
+def stats_scan_usage(user: dict = Depends(get_current_user)):
+    """Return total scanned and total confirmed counts for scan feature usage tracking."""
+    return get_scan_usage_stats()
+
+
 @app.post("/api/transactions")
 @app.post("/api/expenses")
 def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_current_user)):
@@ -1444,7 +1830,6 @@ def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_c
         tx["tags"] = [clean_tag]
     else:
         tx["tags"] = []
-    store_undo_state(user["id"], "log", "transaction", tx["id"], None)
 
     # Trigger automatic notification checks
     try:
@@ -1454,6 +1839,106 @@ def transaction_create(req: TransactionCreateRequest, user: dict = Depends(get_c
         logger.error(f"Error triggering push alerts on transaction create: {e}")
 
     return tx
+
+
+@app.post("/api/transactions/batch")
+def transactions_batch_create(
+    req: BatchTransactionsRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Batch log expenses directly to the database in a single transaction."""
+    if len(req.expenses) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 50 items allowed per batch request",
+        )
+    if not req.expenses:
+        raise HTTPException(
+            status_code=400,
+            detail="No expenses provided in batch request",
+        )
+
+    errors = []
+    validated_items = []
+    for idx, item in enumerate(req.expenses):
+        item_errors = []
+        amt = None
+        if item.amount is None:
+            item_errors.append("amount is required")
+        else:
+            try:
+                amt = float(item.amount)
+                if amt <= 0:
+                    item_errors.append(f"amount must be positive (received {item.amount})")
+            except (ValueError, TypeError):
+                item_errors.append(f"amount must be a valid number (received {item.amount})")
+
+        cat = None
+        if item.category is None or not str(item.category).strip():
+            item_errors.append("category is required and cannot be empty")
+        else:
+            cat = str(item.category).strip().lower()
+
+        if item_errors:
+            errors.append(f"Item {idx}: {', '.join(item_errors)}")
+        else:
+            clean_note = (item.note or "").strip()
+            validated_items.append({
+                "amount": amt,
+                "category": cat,
+                "note": clean_note,
+                "date": item.date or None,
+                "merchant": item.merchant,
+            })
+
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Validation failed: {'; '.join(errors)}",
+        )
+
+    inserted_items = []
+    try:
+        with get_db_cursor() as cur:
+            for item in validated_items:
+                norm_merchant = normalize_merchant(user["id"], item["note"]) if item["note"] else None
+                merchant = item["merchant"] or norm_merchant
+                tx = log_transaction(
+                    user_id=user["id"],
+                    amount=item["amount"],
+                    category=item["category"],
+                    note=item["note"],
+                    raw_message="batch_api",
+                    merchant=merchant,
+                    entry_date=item["date"],
+                    cur=cur,
+                )
+                inserted_items.append({
+                    "id": tx["id"],
+                    "amount": tx["amount"],
+                    "category": tx["category"],
+                    "note": tx["note"],
+                    "date": tx["date"],
+                })
+    except Exception as e:
+        logger.exception(f"Error executing batch transaction insert: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error during batch insert: {str(e)}",
+        )
+
+    # Trigger notification checks
+    try:
+        for itm in validated_items:
+            check_budget_alerts(user["id"], itm["category"], itm["amount"])
+            check_large_expense(user["id"], itm["amount"], itm["category"], itm.get("merchant"))
+    except Exception as e:
+        logger.error(f"Error triggering push alerts on batch transaction create: {e}")
+
+    return {
+        "logged": len(inserted_items),
+        "items": inserted_items,
+    }
 
 
 @app.get("/api/transactions")
@@ -1507,7 +1992,6 @@ def transaction_update(tid: int, req: TransactionUpdateRequest, user: dict = Dep
     """Edit an existing transaction."""
     if req.amount is not None and req.amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be positive")
-    old = get_transaction_by_id(user["id"], tid)
     updated = update_expense(
         user_id=user["id"],
         transaction_id=tid,
@@ -1520,30 +2004,16 @@ def transaction_update(tid: int, req: TransactionUpdateRequest, user: dict = Dep
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if old:
-        store_undo_state(user["id"], "update", "transaction", tid, old)
     return updated
 
 
 @app.delete("/api/transactions/{tid}")
 def transaction_delete(tid: int, user: dict = Depends(get_current_user)):
     """Delete a single transaction."""
-    old = get_transaction_by_id(user["id"], tid)
     ok = delete_expense(user_id=user["id"], transaction_id=tid)
     if not ok:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if old:
-        store_undo_state(user["id"], "delete", "transaction", tid, old)
     return {"status": "ok", "deleted_id": tid}
-
-
-@app.post("/api/transactions/bulk-delete")
-def transactions_bulk_delete(req: TransactionBulkDeleteRequest, user: dict = Depends(get_current_user)):
-    """Bulk delete selected transactions."""
-    if not req.transaction_ids:
-        raise HTTPException(status_code=400, detail="transaction_ids list cannot be empty")
-    cnt = bulk_delete_expenses(user_id=user["id"], transaction_ids=req.transaction_ids)
-    return {"status": "ok", "deleted_count": cnt}
 
 
 # ---------- Merchant Correction ----------
@@ -1552,21 +2022,6 @@ def transactions_bulk_delete(req: TransactionBulkDeleteRequest, user: dict = Dep
 def merchant_correct(req: MerchantCorrectionRequest, user: dict = Depends(get_current_user)):
     """Store a merchant name correction."""
     return add_merchant_alias(user["id"], req.raw_input, req.normalized_name)
-
-
-# ---------- Undo ----------
-
-@app.get("/api/undo/status")
-def undo_status(user: dict = Depends(get_current_user)):
-    """Check if undo is available."""
-    return get_undo_status(user["id"])
-
-
-@app.post("/api/undo")
-def undo_action(user: dict = Depends(get_current_user)):
-    """Execute undo of the last reversible action."""
-    result = execute_undo(user["id"])
-    return {"message": result}
 
 
 # ---------- Clear & Delete Data ----------
@@ -1625,9 +2080,8 @@ def data_export_all(user: dict = Depends(get_current_user)):
 
 @app.get("/api/onboarding/status")
 def onboarding_status(user: dict = Depends(get_current_user)):
-    """Check if the user needs onboarding (has no budgets set)."""
-    done = has_completed_onboarding(user["id"])
-    return {"completed": done}
+    """Check onboarding status including transactions, income, and budgets flags."""
+    return get_onboarding_status(user["id"])
 
 
 @app.get("/api/onboarding/defaults")
@@ -1755,39 +2209,6 @@ def recurring_trigger_check(user: dict = Depends(get_current_user)):
     return {"status": "ok", "reminders": reminders}
 
 
-# ---------- Tier 1: Monthly Export (PDF / Excel) ----------
-
-@app.get("/api/export/monthly")
-def export_monthly(
-    month: str | None = None,
-    format: str = "pdf",
-    user: dict = Depends(get_current_user),
-):
-    """Download clean, professional PDF or Excel monthly financial statement."""
-    target_month = month.strip() if month else current_month()
-    export_fmt = format.lower().strip()
-    if export_fmt not in ("pdf", "xlsx", "excel"):
-        raise HTTPException(status_code=400, detail="format must be 'pdf' or 'xlsx'")
-
-    if export_fmt in ("xlsx", "excel"):
-        content = generate_monthly_excel(user_id=user["id"], user_email=user["email"], month=target_month)
-        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        filename = f"statement_{target_month}.xlsx"
-    else:
-        content = generate_monthly_pdf(user_id=user["id"], user_email=user["email"], month=target_month)
-        media_type = "application/pdf"
-        filename = f"statement_{target_month}.pdf"
-
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-cache",
-        },
-    )
-
-
 # ---------- Budget Manager (Manual CRUD & Overview) ----------
 
 @app.get("/api/budgets")
@@ -1891,285 +2312,6 @@ def udhar_split(req: SplitExpenseRequest, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ---------- Tier 3: Receipt and Bill Attachments ----------
-
-@app.post("/api/receipts/upload")
-async def receipts_upload(
-    user: dict = Depends(get_current_user),
-    file: UploadFile = File(...),
-    transaction_id: int | None = Form(None),
-):
-    """Upload a receipt/bill file (JPG, PNG, PDF; max 5MB).
-    Validates type by content magic bytes, stores in private Supabase Storage,
-    and records storage path in Postgres."""
-    if get_app_setting("receipt_upload_enabled", "true").lower() != "true":
-        raise HTTPException(status_code=403, detail="Receipt upload is currently disabled by administrator")
-
-    content = await file.read()
-    valid, mime, ext, err = validate_file_content(content)
-    if not valid:
-        raise HTTPException(status_code=400, detail=err)
-
-    ocr_result = ocr_receipt_hook(content, mime)
-    tx_id = transaction_id or 0
-    storage_path = get_storage_path(user["id"], tx_id, ext)
-
-    uploaded = upload_to_storage(storage_path, content, mime)
-    if not uploaded:
-        raise HTTPException(status_code=500, detail="Failed to store receipt in storage bucket.")
-
-    rec = add_receipt(
-        user_id=user["id"],
-        transaction_id=transaction_id,
-        path=storage_path,
-        mime=mime,
-        size=len(content),
-    )
-    rec["signed_url"] = get_signed_url(storage_path)
-    if ocr_result:
-        rec["ocr"] = ocr_result
-    return {"status": "ok", "receipt": rec}
-
-
-@app.get("/api/receipts")
-def receipts_list(user: dict = Depends(get_current_user)):
-    """List all receipts for the user with short-lived signed URLs."""
-    return {"receipts": get_receipts(user["id"])}
-
-
-@app.get("/api/transactions/{tid}/receipts")
-def transaction_receipts_list(tid: int, user: dict = Depends(get_current_user)):
-    """List receipts attached to a specific transaction."""
-    return {"receipts": get_transaction_receipts(user["id"], tid)}
-
-
-@app.delete("/api/receipts/{receipt_id}")
-def receipt_delete(receipt_id: int, user: dict = Depends(get_current_user)):
-    """Delete a receipt from DB and private Supabase Storage."""
-    path = delete_receipt(user["id"], receipt_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="Receipt not found")
-    delete_from_storage(path)
-    return {"status": "ok", "deleted_id": receipt_id}
-
-
-@app.get("/api/receipts/file-stream")
-def receipt_stream_file(path: str, user: dict = Depends(get_current_user)):
-    """Stream receipt file with ownership verification."""
-    expected_prefix = f"{user['id']}/"
-    if not path.startswith(expected_prefix):
-        raise HTTPException(status_code=403, detail="Access denied: unauthorized receipt path.")
-
-    data = get_file_bytes(path)
-    if not data:
-        raise HTTPException(status_code=404, detail="File content not found.")
-
-    content_bytes, mime = data
-    return Response(content=content_bytes, media_type=mime)
-
-
-# ---------- Tier 3: Bank Statement & CSV Import ----------
-
-@app.post("/api/import/preview")
-async def import_preview(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    """Parse CSV upload or plain text paste. Auto-detect columns with fallback.
-    Categorizes with rules -> user past -> cache -> batched LLM.
-    Detects duplicates against user transactions. Excludes credits from expenses."""
-    if get_app_setting("csv_import_enabled", "true").lower() != "true":
-        raise HTTPException(status_code=403, detail="CSV import is currently disabled by administrator")
-
-    content_type = request.headers.get("content-type", "")
-    content_str = ""
-    col_mapping = None
-
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        file_obj = form.get("file")
-        text_val = form.get("text")
-        map_val = form.get("column_mapping")
-        if map_val and isinstance(map_val, str):
-            try:
-                col_mapping = json.loads(map_val)
-            except Exception:
-                pass
-
-        if file_obj and hasattr(file_obj, "read"):
-            raw_bytes = await file_obj.read()
-            if len(raw_bytes) > MAX_FILE_BYTES:
-                raise HTTPException(status_code=400, detail="Uploaded file exceeds 2 MB limit.")
-            for enc in ("utf-8", "utf-8-sig", "latin-1"):
-                try:
-                    content_str = raw_bytes.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-        elif text_val and isinstance(text_val, str):
-            content_str = text_val.strip()
-    elif "application/json" in content_type:
-        body = await request.json()
-        content_str = body.get("text", "").strip()
-        col_mapping = body.get("column_mapping")
-
-    if not content_str:
-        raise HTTPException(status_code=400, detail="No CSV file or text statement provided.")
-
-    if len(content_str.encode("utf-8")) > MAX_FILE_BYTES:
-        raise HTTPException(status_code=400, detail="Statement text exceeds 2 MB limit.")
-
-    raw_rows = []
-    try:
-        raw_rows = parse_csv_content(content_str, col_mapping)
-    except Exception:
-        raw_rows = parse_plain_text_statements(content_str)
-
-    if not raw_rows:
-        raw_rows = parse_plain_text_statements(content_str)
-
-    if not raw_rows:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not detect statement rows. Please check file format or column headers (Date, Description, Debit/Credit).",
-        )
-
-    rules_count = 0
-    past_user_count = 0
-    cache_count = 0
-    llm_count = 0
-    credits_count = 0
-    duplicates_count = 0
-
-    uncategorized = []
-    processed_rows = []
-
-    for idx, r in enumerate(raw_rows):
-        desc = r["description"]
-        amt = r["amount"]
-        d_str = r["date"]
-        is_credit = r["is_credit"]
-
-        norm_merchant = normalize_merchant(user["id"], desc) if desc else ""
-        merchant_name = norm_merchant or desc
-
-        is_dup = False
-        if not is_credit and amt > 0:
-            dup_entry = check_duplicate_expense(user["id"], amt, "", merchant_name, d_str)
-            if dup_entry:
-                is_dup = True
-                duplicates_count += 1
-
-        if is_credit:
-            credits_count += 1
-            processed_rows.append({
-                "id": idx,
-                "date": d_str,
-                "description": desc,
-                "merchant": merchant_name,
-                "amount": amt,
-                "is_credit": True,
-                "category": "Income",
-                "categorized_by": "credit",
-                "is_duplicate": is_dup,
-            })
-            continue
-
-        cat = categorize_by_rule(norm_merchant, desc)
-        source = ""
-        if cat:
-            source = "rule"
-            rules_count += 1
-        else:
-            cat = get_past_merchant_category(user["id"], norm_merchant)
-            if cat:
-                source = "past_user"
-                past_user_count += 1
-            else:
-                cat = get_cached_merchant_category(norm_merchant)
-                if cat:
-                    source = "cache"
-                    cache_count += 1
-
-        row_item = {
-            "id": idx,
-            "date": d_str,
-            "description": desc,
-            "merchant": merchant_name,
-            "amount": amt,
-            "is_credit": False,
-            "category": cat or "Other",
-            "categorized_by": source,
-            "is_duplicate": is_dup,
-        }
-        processed_rows.append(row_item)
-
-        if not cat:
-            uncategorized.append({"merchant": merchant_name, "description": desc, "row_idx": idx})
-
-    if uncategorized:
-        allowed_cats = get_all_categories(user["id"])
-        llm_mapped = batch_llm_categorize(uncategorized, allowed_cats)
-        for uncat in uncategorized:
-            m = uncat["merchant"]
-            cat_llm = llm_mapped.get(m)
-            if cat_llm:
-                set_cached_merchant_category(m, cat_llm)
-                processed_rows[uncat["row_idx"]]["category"] = cat_llm
-                processed_rows[uncat["row_idx"]]["categorized_by"] = "llm"
-                llm_count += 1
-            else:
-                processed_rows[uncat["row_idx"]]["categorized_by"] = "default"
-
-    return {
-        "rows": processed_rows,
-        "summary": {
-            "total_rows": len(processed_rows),
-            "expenses_count": len(processed_rows) - credits_count,
-            "credits_count": credits_count,
-            "duplicates_count": duplicates_count,
-            "rules_count": rules_count,
-            "past_user_count": past_user_count,
-            "cache_count": cache_count,
-            "llm_count": llm_count,
-        },
-    }
-
-
-@app.post("/api/import/confirm")
-def import_confirm(req: ConfirmImportRequest, user: dict = Depends(get_current_user)):
-    """Save approved statement rows into the database."""
-    imported_tx = 0
-    imported_inc = 0
-    for r in req.rows:
-        if r.is_credit:
-            if r.import_credit and r.amount > 0:
-                add_income_entry(
-                    user_id=user["id"],
-                    amount=r.amount,
-                    source=r.merchant or r.note or "Imported Credit",
-                    entry_date=r.date,
-                )
-                imported_inc += 1
-        else:
-            if r.amount > 0:
-                log_transaction(
-                    user_id=user["id"],
-                    amount=r.amount,
-                    category=r.category,
-                    note=r.note or r.merchant or "",
-                    merchant=r.merchant,
-                    entry_date=r.date,
-                )
-                imported_tx += 1
-
-    return {
-        "status": "ok",
-        "imported_transactions": imported_tx,
-        "imported_income": imported_inc,
-    }
-
-
 # ---------- Tier 3: Udhar Reminder Nudge ----------
 
 @app.get("/api/udhar/person/{person_key}/reminder")
@@ -2209,14 +2351,6 @@ def calendar_view(month: str | None = None, user: dict = Depends(get_current_use
             "running_balance_end": summ.get("end_balance", 0.0),
         },
     }
-
-
-# ---------- Tier 3: Overspending Projections ----------
-
-@app.get("/api/projections")
-def projections_view(user: dict = Depends(get_current_user)):
-    """Get projected category overspending alerts based on current spending pace."""
-    return {"projections": get_overspending_projections(user["id"])}
 
 
 # ---------- Tier 3: Web Push Notifications ----------
@@ -2822,6 +2956,11 @@ async def ingest_sms(
 
     imported_count = 0
     duplicate_count = 0
+    from datetime import date as d_date
+
+    amt_pattern = re.compile(r"(?:rs\.?|inr|\u20b9)\s*([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
+    debit_keywords = ("debited", "spent", "paid", "sent", "withdrawn", "dr", "purchase")
+    credit_keywords = ("credited", "received", "cr", "deposited", "refund")
 
     for item in items:
         if not isinstance(item, dict):
@@ -2830,33 +2969,36 @@ async def ingest_sms(
         if not body:
             continue
         sender = item.get("sender", "").strip()
-        parsed_rows = parse_plain_text_statements(body)
-        for r in parsed_rows:
-            amt = r.get("amount", 0.0)
-            desc = r.get("description", "") or sender
-            is_credit = r.get("is_credit", False)
-            d_str = r.get("date") or date.today().isoformat()
+        body_lower = body.lower()
+        m = amt_pattern.search(body)
+        if not m:
+            continue
+        try:
+            amt = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        is_credit = any(k in body_lower for k in credit_keywords) and not any(k in body_lower for k in debit_keywords)
+        d_str = d_date.today().isoformat()
+        desc = sender or body[:60]
+        norm_merchant = normalize_merchant(user["id"], desc) if desc else ""
+        merchant_name = norm_merchant or desc
 
-            norm_merchant = normalize_merchant(user["id"], desc) if desc else ""
-            merchant_name = norm_merchant or desc
+        if not is_credit and amt > 0:
+            dup = check_duplicate_expense(user["id"], amt, "", merchant_name, d_str)
+            if dup:
+                duplicate_count += 1
+                continue
 
-            if not is_credit and amt > 0:
-                dup = check_duplicate_expense(user["id"], amt, "", merchant_name, d_str)
-                if dup:
-                    duplicate_count += 1
-                    continue
-
-                cat = categorize_by_rule(norm_merchant, desc) or "Other"
-                log_transaction(
-                    user_id=user["id"],
-                    amount=amt,
-                    category=cat,
-                    note=desc[:200],
-                    raw_message=f"SMS from {sender}: {body}"[:500],
-                    merchant=merchant_name,
-                    entry_date=d_str,
-                )
-                imported_count += 1
+            log_transaction(
+                user_id=user["id"],
+                amount=amt,
+                category="Other",
+                note=desc[:200],
+                raw_message=f"SMS from {sender}: {body}"[:500],
+                merchant=merchant_name,
+                entry_date=d_str,
+            )
+            imported_count += 1
 
     return {"status": "ok", "imported": imported_count, "duplicates": duplicate_count}
 

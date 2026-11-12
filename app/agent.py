@@ -41,7 +41,7 @@ money habits. You give personalised insights grounded entirely in the user's \
 own data from tools -- you never invent numbers.
 
 == CORE BEHAVIOUR ==
-- When the user mentions spending money, call log_expense.
+- When the user mentions spending money, call log_expense. If 2 or more expenses are mentioned in one message, call log_expenses_batch.
 - When they mention splitting or sharing a group expense (e.g. "I paid 1500 for dinner with Rahul and Priya"), call split_expense.
 - When they mention regular or recurring bills (e.g. "I pay 12000 rent every month", "Netflix is 649 monthly"), call add_recurring_expense. Confirm using actual stored values returned from the tool, never invent.
 - When they ask about upcoming bills or subscriptions, call get_recurring_expenses.
@@ -58,7 +58,6 @@ can spend, call get_financial_snapshot. Use the numbers it returns exactly.
 set_savings_goal. Always confirm the target, saved-so-far, and deadline before saving.
 - When they contribute to a goal ("I saved 2000 for my trip"), call \
 contribute_to_goal using the goal id from get_goals.
-- When they say "undo" or "undo that" or "cancel the last one", call undo_last_action.
 - When investing or insurance comes up, you may explain how financial \
 instruments work (FDs, RDs, PPF, NPS, SIPs, index funds, mutual funds, gold, \
 term insurance) and share general principles. Always add this one line: \
@@ -90,6 +89,7 @@ confirm the right transaction, then call update_expense or delete_expense.
 - Keep replies SHORT -- 2-4 lines plus numbers. Use the Rs symbol (Rs) for amounts in INR.
 - Never repeat raw tool output verbatim -- summarise it conversationally.
 - Never invent numbers -- every figure must come from a tool result.
+- BATCH RULE: When the user mentions 2 or more expenses in a single message (e.g. 'spent 200 on food, 500 on travel and 150 on groceries'), always use log_expenses_batch with all items in one call. Never call log_expense multiple times sequentially for expenses listed in the same message. Parse all amounts, categories and notes from the message before calling the tool — do not ask the user to repeat information they already gave.
 
 == APP GUIDE ==
 Use this guide to explain how features work in ABT / ART:
@@ -146,9 +146,6 @@ def log_expense(amount: float, category: str, note: str = "", force: bool = Fals
 
     record = db.log_transaction(user_id=user_id, amount=amount, category=cat, note=clean_note, merchant=merchant)
 
-    # Store undo state
-    db.store_undo_state(user_id, "log", "transaction", record["id"], None)
-
     # Add tags if provided
     if tags:
         tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
@@ -166,6 +163,136 @@ def log_expense(amount: float, category: str, note: str = "", force: bool = Fals
     note_str = f" for {clean_note}" if clean_note else ""
     merchant_str = f" ({merchant})" if merchant and merchant.lower() != clean_note.lower() else ""
     return f"Logged Rs {amount:.0f}{note_str}{merchant_str} under {cat.capitalize()}."
+
+
+@tool
+def log_expenses_batch(expenses: list, force: bool = False, config: RunnableConfig = None) -> str:
+    """Log multiple expenses in a single call when the user mentions several
+    expenses in one message. Each item in the list is a dict with keys:
+    amount (float, required), category (str, required), note (str, optional),
+    date (str optional YYYY-MM-DD, defaults today).
+    Use this instead of calling log_expense repeatedly when the user lists
+    2 or more expenses in one message."""
+    user_id = _get_user_id(config)
+    import json
+    if isinstance(expenses, str):
+        try:
+            expenses = json.loads(expenses)
+        except Exception:
+            return "Could not parse expenses list."
+    if not isinstance(expenses, list) or not expenses:
+        return "No expenses provided to log."
+
+    # Parse each expense item
+    parsed_items = []
+    for item in expenses:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except Exception:
+                continue
+        if not isinstance(item, dict):
+            continue
+        try:
+            amt = float(item.get("amount", 0))
+        except (ValueError, TypeError):
+            continue
+        if amt <= 0:
+            continue
+        cat = str(item.get("category", "")).strip().lower()
+        if not cat:
+            continue
+        raw_note = str(item.get("note", "") or "").strip()
+        entry_date = str(item.get("date", "") or "").strip() or None
+
+        # Reusing normalize_merchant DB function
+        merchant = db.normalize_merchant(user_id, raw_note) if raw_note else None
+
+        parsed_items.append({
+            "amount": amt,
+            "category": cat,
+            "note": raw_note,
+            "merchant": merchant,
+            "date": entry_date,
+        })
+
+    if not parsed_items:
+        return "No valid expenses found to log."
+
+    # Duplicate checking (reuse check_duplicate_expense)
+    if not force:
+        duplicates = []
+        for itm in parsed_items:
+            dup = db.check_duplicate_expense(
+                user_id,
+                itm["amount"],
+                itm["category"],
+                itm["merchant"] or itm["note"],
+                entry_date=itm["date"],
+            )
+            if dup:
+                duplicates.append((itm, dup))
+        if duplicates:
+            dup_lines = [
+                f"• ₹{itm['amount']:.0f} under {itm['category']} ({d.get('note') or 'no note'})"
+                for itm, d in duplicates
+            ]
+            return (
+                f"This looks like a duplicate -- you already logged:\n"
+                + "\n".join(dup_lines)
+                + "\nSay 'log it anyway' or 'yes, log it' to confirm."
+            )
+
+    # Run all inserts in a single DB transaction
+    logged_records = []
+    try:
+        with db.get_db_cursor() as cur:
+            for itm in parsed_items:
+                rec = db.log_transaction(
+                    user_id=user_id,
+                    amount=itm["amount"],
+                    category=itm["category"],
+                    note=itm["note"],
+                    merchant=itm["merchant"],
+                    entry_date=itm["date"],
+                    cur=cur,
+                )
+                logged_records.append(rec)
+    except Exception as e:
+        import logging
+        logging.getLogger("budget-tracker").exception(f"Error logging batch expenses: {e}")
+        return f"Failed to log expenses: {str(e)}"
+
+    # Trigger notification checks
+    try:
+        from app.scheduler import check_budget_alerts, check_large_expense
+        for itm in parsed_items:
+            check_budget_alerts(user_id, itm["category"], itm["amount"])
+            check_large_expense(user_id, itm["amount"], itm["category"], itm["merchant"])
+    except Exception as e:
+        import logging
+        logging.getLogger("budget-tracker").error(f"Error checking alerts for batch expenses: {e}")
+
+    # Return clean summary string:
+    # "Logged 3 expenses:
+    #  • ₹200 — Food (lunch)
+    #  • ₹500 — Travel (uber)
+    #  • ₹150 — Groceries"
+    count = len(logged_records)
+    expense_word = "expense" if count == 1 else "expenses"
+    lines = [f"Logged {count} {expense_word}:"]
+    for itm in parsed_items:
+        amt = itm["amount"]
+        amt_str = f"{int(amt)}" if float(amt).is_integer() else f"{amt:.2f}"
+        cat_display = itm["category"].capitalize()
+        note = itm["note"]
+        if note and note.lower() != itm["category"].lower():
+            note_str = f" ({note})"
+        else:
+            note_str = ""
+        lines.append(f" • ₹{amt_str} — {cat_display}{note_str}")
+
+    return "\n".join(lines)
 
 
 @tool
@@ -260,11 +387,6 @@ def update_expense(
 ) -> str:
     """Update an existing expense by transaction_id. Only provide fields to change."""
     user_id = _get_user_id(config)
-    # Store previous state for undo
-    old = db.get_transaction_by_id(user_id, transaction_id)
-    if old:
-        db.store_undo_state(user_id, "update", "transaction", transaction_id, old)
-
     updated = db.update_expense(user_id=user_id, transaction_id=transaction_id,
                                 amount=amount, category=category, note=note)
     if not updated:
@@ -277,11 +399,6 @@ def update_expense(
 def delete_expense(transaction_id: int, config: RunnableConfig = None) -> str:
     """Delete an existing expense by its transaction ID."""
     user_id = _get_user_id(config)
-    # Store previous state for undo
-    old = db.get_transaction_by_id(user_id, transaction_id)
-    if old:
-        db.store_undo_state(user_id, "delete", "transaction", transaction_id, old)
-
     success = db.delete_expense(user_id=user_id, transaction_id=transaction_id)
     if success:
         return f"Deleted transaction #{transaction_id}."
@@ -590,20 +707,6 @@ def split_expense(
         return f"Could not split expense: {str(e)}"
 
 
-# ======================================================================
-# TOOLS -- Undo
-# ======================================================================
-
-@tool
-def undo_last_action(config: RunnableConfig = None) -> str:
-    """Undo the most recent reversible action (log, edit, or delete).
-    Only works within 10 minutes of the action. Call this when the user says
-    'undo', 'undo that', or 'cancel the last one'."""
-    user_id = _get_user_id(config)
-    result = db.execute_undo(user_id)
-    return result
-
-
 @tool
 def check_overspending_projections(config: RunnableConfig = None) -> str:
     """Check projected month-end spending pace per category.
@@ -620,6 +723,7 @@ def check_overspending_projections(config: RunnableConfig = None) -> str:
 TOOLS = [
     # Expenses
     log_expense,
+    log_expenses_batch,
     split_expense,
     set_budget,
     check_budget_status,
@@ -644,8 +748,6 @@ TOOLS = [
     update_profile,
     get_financial_snapshot,
     get_health_score,
-    # Undo
-    undo_last_action,
 ]
 
 _checkpointer = MemorySaver()

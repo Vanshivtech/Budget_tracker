@@ -24,16 +24,6 @@ import time
 import json
 from contextlib import contextmanager
 
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor, execute_values
@@ -190,12 +180,15 @@ def init_db() -> None:
 
             ALTER TABLE udhar_entries ADD COLUMN IF NOT EXISTS is_split BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE udhar_entries ADD COLUMN IF NOT EXISTS transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL;
+            ALTER TABLE udhar_entries ADD COLUMN IF NOT EXISTS linked_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+            CREATE INDEX IF NOT EXISTS idx_udhar_linked_user ON udhar_entries(linked_user_id);
 
             -- Tier 2: Username, avatar, merchant, categories, tags, undo
             ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(50);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_id INTEGER NOT NULL DEFAULT 1;
 
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant VARCHAR(255);
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual';
 
             CREATE TABLE IF NOT EXISTS user_categories (
                 id         SERIAL PRIMARY KEY,
@@ -318,7 +311,8 @@ def init_db() -> None:
                 ('maintenance_mode', 'false'),
                 ('push_notifications_enabled', 'true'),
                 ('csv_import_enabled', 'true'),
-                ('receipt_upload_enabled', 'true')
+                ('receipt_upload_enabled', 'true'),
+                ('total_scans_count', '0')
             ON CONFLICT (key) DO NOTHING;
         """)
 
@@ -512,29 +506,42 @@ def log_transaction(
     raw_message: str = "",
     merchant: str | None = None,
     entry_date: str | None = None,
+    source: str = "manual",
+    cur = None,
 ) -> dict:
     """Insert a new transaction scoped to user_id."""
     cat = category.lower().strip()
-    with get_db_cursor() as cur:
+    src = (source or "manual").strip().lower()
+    if src == "manual":
+        if raw_message == "agent":
+            src = "chat"
+        elif raw_message == "scan":
+            src = "scan"
+        elif isinstance(raw_message, str) and raw_message.startswith("SMS"):
+            src = "sms"
+    if src not in ("manual", "chat", "scan", "sms"):
+        src = "manual"
+
+    def _execute(c):
         if entry_date:
-            cur.execute(
+            c.execute(
                 """
-                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant, date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::timestamptz)
-                RETURNING id, user_id, date, amount, category, note, merchant
+                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant, date, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::timestamptz, %s)
+                RETURNING id, user_id, date, amount, category, note, merchant, source
                 """,
-                (user_id, amount, cat, note.strip(), raw_message, merchant, entry_date),
+                (user_id, amount, cat, note.strip(), raw_message, merchant, entry_date, src),
             )
         else:
-            cur.execute(
+            c.execute(
                 """
-                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id, user_id, date, amount, category, note, merchant
+                INSERT INTO transactions (user_id, amount, category, note, raw_message, merchant, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, user_id, date, amount, category, note, merchant, source
                 """,
-                (user_id, amount, cat, note.strip(), raw_message, merchant),
+                (user_id, amount, cat, note.strip(), raw_message, merchant, src),
             )
-        row = cur.fetchone()
+        row = c.fetchone()
         date_str = (
             row["date"].isoformat()
             if hasattr(row["date"], "isoformat")
@@ -548,7 +555,57 @@ def log_transaction(
             "category": row["category"],
             "note": row["note"],
             "merchant": row.get("merchant"),
+            "source": row.get("source", src),
         }
+
+    if cur is not None:
+        return _execute(cur)
+    with get_db_cursor() as c:
+        return _execute(c)
+
+
+def increment_scan_count(count: int = 1) -> None:
+    """Increment total_scans_count in app_settings to track scan endpoint usage."""
+    if count <= 0:
+        return
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('total_scans_count', %s, NOW())
+                ON CONFLICT (key) DO UPDATE
+                SET value = ((COALESCE(NULLIF(app_settings.value, ''), '0')::int) + %s)::text,
+                    updated_at = NOW()
+                """,
+                (str(count), count),
+            )
+    except Exception:
+        pass
+
+
+def get_scan_usage_stats() -> dict:
+    """Return total images scanned and total scan transactions confirmed."""
+    total_scanned = 0
+    total_confirmed = 0
+    with get_db_cursor() as cur:
+        cur.execute("SELECT value FROM app_settings WHERE key = 'total_scans_count'")
+        row = cur.fetchone()
+        if row and row.get("value"):
+            try:
+                total_scanned = int(row["value"])
+            except ValueError:
+                total_scanned = 0
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM transactions WHERE source = 'scan'")
+        cnt_row = cur.fetchone()
+        if cnt_row:
+            total_confirmed = int(cnt_row["cnt"] or 0)
+
+    return {
+        "total_scanned": max(total_scanned, total_confirmed),
+        "total_confirmed": total_confirmed,
+    }
 
 
 def get_transactions(
@@ -654,55 +711,32 @@ def update_expense(
 
 
 def delete_expense(user_id: int, transaction_id: int) -> bool:
-    """Delete a transaction owned by user_id and its attached receipt files. Returns True if deleted."""
-    from app.storage import delete_from_storage
+    """Delete a transaction owned by user_id. Returns True if deleted."""
     with get_db_cursor() as cur:
-        cur.execute(
-            "SELECT path FROM receipts WHERE transaction_id = %s AND user_id = %s",
-            (transaction_id, user_id),
-        )
-        receipt_paths = [r["path"] for r in cur.fetchall()]
         cur.execute(
             "DELETE FROM transactions WHERE id = %s AND user_id = %s",
             (transaction_id, user_id),
         )
-        deleted = cur.rowcount > 0
-
-    if deleted and receipt_paths:
-        for p in receipt_paths:
-            try:
-                delete_from_storage(p)
-            except Exception:
-                pass
-
-    return deleted
+        return cur.rowcount > 0
 
 
-def bulk_delete_expenses(user_id: int, transaction_ids: list[int]) -> int:
-    """Bulk delete transactions owned by user_id and attached receipt files."""
-    if not transaction_ids:
-        return 0
-    from app.storage import delete_from_storage
+def get_recent_top_categories(user_id: int, days: int = 30, limit: int = 5) -> list[str]:
+    """Return the most frequently used categories by user_id in the last `days` days."""
     with get_db_cursor() as cur:
         cur.execute(
-            "SELECT path FROM receipts WHERE user_id = %s AND transaction_id = ANY(%s)",
-            (user_id, transaction_ids),
+            """
+            SELECT category, COUNT(*) AS cnt, MAX(date) AS last_used
+            FROM transactions
+            WHERE user_id = %s
+              AND date >= NOW() - (%s * INTERVAL '1 day')
+            GROUP BY category
+            ORDER BY cnt DESC, last_used DESC
+            LIMIT %s
+            """,
+            (user_id, days, limit),
         )
-        receipt_paths = [r["path"] for r in cur.fetchall()]
-        cur.execute(
-            "DELETE FROM transactions WHERE user_id = %s AND id = ANY(%s)",
-            (user_id, transaction_ids),
-        )
-        deleted_count = cur.rowcount
-
-    if deleted_count > 0 and receipt_paths:
-        for p in receipt_paths:
-            try:
-                delete_from_storage(p)
-            except Exception:
-                pass
-
-    return deleted_count
+        rows = cur.fetchall()
+        return [r["category"].strip().capitalize() for r in rows if r.get("category")]
 
 
 def spend_by_category(user_id: int, month: str) -> dict[str, float]:
@@ -1101,6 +1135,7 @@ def add_udhar(
     is_split: bool = False,
     transaction_id: int | None = None,
     entry_date: str | None = None,
+    linked_user_id: int | None = None,
 ) -> dict:
     """Add a new udhar entry. Never counted in expenses."""
     person_key = person_name.strip().lower()
@@ -1136,20 +1171,20 @@ def add_udhar(
         if entry_dt:
             cur.execute(
                 """
-                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id, entry_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id
+                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id, entry_date, linked_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id, linked_user_id
                 """,
-                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id, entry_dt),
+                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id, entry_dt, linked_user_id),
             )
         else:
             cur.execute(
                 """
-                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id
+                INSERT INTO udhar_entries (user_id, person_name, person_key, kind, amount, note, due_date, is_split, transaction_id, linked_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, person_name, kind, amount, note, entry_date, due_date, is_split, transaction_id, linked_user_id
                 """,
-                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id),
+                (user_id, person_name.strip(), person_key, db_kind, amount, entry_note, due_dt, is_split, transaction_id, linked_user_id),
             )
         row = cur.fetchone()
         d = dict(row)
@@ -1192,7 +1227,7 @@ def update_udhar_entry(
             UPDATE udhar_entries
             SET amount = %s, note = %s, entry_date = %s::timestamptz, due_date = %s::timestamptz
             WHERE id = %s AND user_id = %s
-            RETURNING id, person_name, person_key, kind, amount, note, entry_date, due_date, is_split, transaction_id
+            RETURNING id, person_name, person_key, kind, amount, note, entry_date, due_date, is_split, transaction_id, linked_user_id
             """,
             (new_amount, new_note, new_entry_date, new_due_date, entry_id, user_id),
         )
@@ -1207,18 +1242,26 @@ def update_udhar_entry(
         return d
 
 
-def delete_udhar_entry(user_id: int, entry_id: int) -> bool:
-    """Delete an udhar entry owned by user_id."""
+def delete_udhar_entry(user_id: int, entry_id: int) -> dict | None:
+    """Delete an udhar entry owned by user_id. Returns deleted row dict if found."""
     with get_db_cursor() as cur:
-        cur.execute("DELETE FROM udhar_entries WHERE id = %s AND user_id = %s", (entry_id, user_id))
-        return cur.rowcount > 0
+        cur.execute(
+            "DELETE FROM udhar_entries WHERE id = %s AND user_id = %s RETURNING id, user_id, person_name, kind, amount, linked_user_id",
+            (entry_id, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
-def resolve_udhar_due_date(user_id: int, entry_id: int) -> bool:
-    """Clear due_date on an udhar entry so overdue highlight is removed."""
+def resolve_udhar_due_date(user_id: int, entry_id: int) -> dict | None:
+    """Clear due_date on an udhar entry so overdue highlight is removed. Returns updated row dict if found."""
     with get_db_cursor() as cur:
-        cur.execute("UPDATE udhar_entries SET due_date = NULL WHERE id = %s AND user_id = %s", (entry_id, user_id))
-        return cur.rowcount > 0
+        cur.execute(
+            "UPDATE udhar_entries SET due_date = NULL WHERE id = %s AND user_id = %s RETURNING id, user_id, person_name, kind, amount, linked_user_id",
+            (entry_id, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def record_udhar_repayment(
@@ -1268,7 +1311,7 @@ def get_udhar_entries(user_id: int) -> list[dict]:
     with get_db_cursor() as cur:
         cur.execute(
             """
-            SELECT id, person_name, person_key, kind, amount, note, entry_date, due_date, is_split, transaction_id
+            SELECT id, person_name, person_key, kind, amount, note, entry_date, due_date, is_split, transaction_id, linked_user_id
             FROM udhar_entries
             WHERE user_id = %s
             ORDER BY entry_date DESC
@@ -1280,6 +1323,34 @@ def get_udhar_entries(user_id: int) -> list[dict]:
         for r in rows:
             d = dict(r)
             for f in ("entry_date", "due_date"):
+                if d.get(f) and hasattr(d[f], "isoformat"):
+                    d[f] = d[f].isoformat()
+            d["amount"] = float(d["amount"])
+            d["is_split"] = bool(d.get("is_split", False))
+            result.append(d)
+        return result
+
+
+def get_linked_udhar_entries(user_id: int) -> list[dict]:
+    """Return udhar entries recorded by other users where current user is linked_user_id."""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.id, u.user_id, u.person_name, u.person_key, u.kind, u.amount, u.note,
+                   u.entry_date, u.due_date, u.is_split, u.transaction_id, u.linked_user_id, u.created_at,
+                   usr.username AS recorded_by_username, usr.email AS recorded_by_email, usr.avatar_id AS recorded_by_avatar_id
+            FROM udhar_entries u
+            JOIN users usr ON u.user_id = usr.id
+            WHERE u.linked_user_id = %s
+            ORDER BY u.entry_date DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            for f in ("entry_date", "due_date", "created_at"):
                 if d.get(f) and hasattr(d[f], "isoformat"):
                     d[f] = d[f].isoformat()
             d["amount"] = float(d["amount"])
@@ -2138,6 +2209,33 @@ def has_completed_onboarding(user_id: int) -> bool:
         return row["cnt"] > 0
 
 
+def get_onboarding_status(user_id: int) -> dict:
+    """Return onboarding status and presence of transactions, income, and budgets."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT EXISTS(SELECT 1 FROM transactions WHERE user_id = %s) AS has_tx", (user_id,))
+        has_transactions = bool(cur.fetchone()["has_tx"])
+
+        cur.execute("SELECT EXISTS(SELECT 1 FROM income_entries WHERE user_id = %s) AS has_inc", (user_id,))
+        has_income = bool(cur.fetchone()["has_inc"])
+
+        cur.execute("SELECT EXISTS(SELECT 1 FROM budgets WHERE user_id = %s) AS has_b", (user_id,))
+        has_budgets = bool(cur.fetchone()["has_b"])
+
+        cur.execute(
+            "SELECT EXISTS(SELECT 1 FROM user_profile WHERE user_id = %s AND living_situation IS NOT NULL) AS prof_done",
+            (user_id,),
+        )
+        prof_done = bool(cur.fetchone()["prof_done"])
+
+        completed = bool(has_budgets or prof_done)
+        return {
+            "completed": completed,
+            "has_transactions": has_transactions,
+            "has_income": has_income,
+            "has_budgets": has_budgets,
+        }
+
+
 def complete_onboarding(
     user_id: int,
     living_situation: str,
@@ -2769,380 +2867,6 @@ def compute_health_score(user_id: int, month: str | None = None) -> dict:
 
 
 # ======================================================================
-# TIER 1: Monthly Export (PDF / Excel)
-# ======================================================================
-
-def generate_monthly_excel(user_id: int, user_email: str, month: str) -> bytes:
-    """Generate a clean, professional Excel statement with Summary and Transactions sheets."""
-    wb = Workbook()
-    ws_summary = wb.active
-    ws_summary.title = "Summary"
-
-    # Styling tokens
-    font_title = Font(name="Segoe UI", size=14, bold=True, color="10B981")
-    font_meta = Font(name="Segoe UI", size=9, color="64748B")
-    font_sec = Font(name="Segoe UI", size=11, bold=True, color="0F172A")
-    font_th = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
-    font_td = Font(name="Segoe UI", size=10, color="0F172A")
-    font_bold = Font(name="Segoe UI", size=10, bold=True, color="0F172A")
-
-    fill_th = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
-    fill_zebra = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
-    fill_kpi = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-
-    thin_border = Border(
-        left=Side(style='thin', color='E2E8F0'),
-        right=Side(style='thin', color='E2E8F0'),
-        top=Side(style='thin', color='E2E8F0'),
-        bottom=Side(style='thin', color='E2E8F0'),
-    )
-
-    # 1. Fetch data
-    inc_data = get_income_summary(user_id=user_id, month=month)
-    total_income = inc_data["total"]
-    eff_budgets = get_effective_budgets(user_id=user_id, month=month)
-    cat_spend = spend_by_category(user_id=user_id, month=month)
-    transactions = get_transactions(user_id=user_id, month=month)
-    total_spent = sum(cat_spend.values())
-    net_savings = total_income - total_spent
-    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
-
-    # Summary Sheet Header
-    ws_summary["A1"] = "ABT — Monthly Financial Statement"
-    ws_summary["A1"].font = font_title
-    ws_summary["A2"] = f"Period: {month}   |   Account: {user_email}   |   Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    ws_summary["A2"].font = font_meta
-
-    # Key Metrics Table
-    ws_summary["A4"] = "Monthly Performance Overview"
-    ws_summary["A4"].font = font_sec
-
-    kpi_headers = ["Total Income", "Total Spending", "Net Savings", "Savings Rate"]
-    kpi_values = [total_income, total_spent, net_savings, f"{savings_rate:.1f}%"]
-
-    for col_idx, (h, v) in enumerate(zip(kpi_headers, kpi_values), start=1):
-        cell_h = ws_summary.cell(row=5, column=col_idx, value=h)
-        cell_h.font = font_th
-        cell_h.fill = fill_th
-        cell_h.alignment = Alignment(horizontal="center", vertical="center")
-        cell_h.border = thin_border
-
-        cell_v = ws_summary.cell(row=6, column=col_idx, value=v)
-        cell_v.font = font_bold
-        cell_v.fill = fill_kpi
-        cell_v.alignment = Alignment(horizontal="center", vertical="center")
-        cell_v.border = thin_border
-        if isinstance(v, (int, float)):
-            cell_v.number_format = '"Rs " #,##0.00'
-
-    # Category Breakdown Table
-    ws_summary["A8"] = "Category Breakdown & Budget Adherence"
-    ws_summary["A8"].font = font_sec
-
-    cat_headers = ["Category", "Base Budget", "Carried Rollover", "Effective Budget", "Actual Spent", "Remaining", "% Used"]
-    for col_idx, h in enumerate(cat_headers, start=1):
-        cell = ws_summary.cell(row=9, column=col_idx, value=h)
-        cell.font = font_th
-        cell.fill = fill_th
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-
-    all_cats = sorted(set(list(eff_budgets.keys()) + list(cat_spend.keys())))
-    row_num = 10
-    total_effective_b = 0.0
-
-    for cat in all_cats:
-        b_info = eff_budgets.get(cat, {})
-        base_b = b_info.get("base_limit", 0.0)
-        carried = b_info.get("carried_amount", 0.0)
-        eff_b = b_info.get("effective_budget", base_b + carried)
-        spent = cat_spend.get(cat, 0.0)
-        remaining = eff_b - spent if eff_b > 0 else 0.0
-        pct = (spent / eff_b * 100) if eff_b > 0 else 0.0
-        if eff_b > 0:
-            total_effective_b += eff_b
-
-        is_even = (row_num % 2 == 0)
-        row_fill = fill_zebra if is_even else None
-
-        values = [cat.capitalize(), base_b, carried, eff_b, spent, remaining, f"{pct:.1f}%"]
-        for c_idx, val in enumerate(values, start=1):
-            cell = ws_summary.cell(row=row_num, column=c_idx, value=val)
-            cell.font = font_td
-            if row_fill:
-                cell.fill = row_fill
-            cell.border = thin_border
-            if c_idx in (2, 3, 4, 5, 6):
-                cell.number_format = '"Rs " #,##0.00'
-                cell.alignment = Alignment(horizontal="right")
-            elif c_idx == 7:
-                cell.alignment = Alignment(horizontal="right")
-            else:
-                cell.alignment = Alignment(horizontal="left")
-        row_num += 1
-
-    # Total Row
-    ws_summary.cell(row=row_num, column=1, value="Total").font = font_bold
-    ws_summary.cell(row=row_num, column=4, value=total_effective_b).font = font_bold
-    ws_summary.cell(row=row_num, column=4).number_format = '"Rs " #,##0.00'
-    ws_summary.cell(row=row_num, column=5, value=total_spent).font = font_bold
-    ws_summary.cell(row=row_num, column=5).number_format = '"Rs " #,##0.00'
-    ws_summary.cell(row=row_num, column=6, value=total_effective_b - total_spent).font = font_bold
-    ws_summary.cell(row=row_num, column=6).number_format = '"Rs " #,##0.00'
-    for c in range(1, 8):
-        ws_summary.cell(row=row_num, column=c).border = thin_border
-
-    # Sheet 2: Transactions
-    ws_tx = wb.create_sheet(title="Transactions")
-    ws_tx["A1"] = f"Transactions Log — {month}"
-    ws_tx["A1"].font = font_title
-
-    tx_headers = ["ID", "Date", "Category", "Amount", "Note"]
-    for col_idx, h in enumerate(tx_headers, start=1):
-        cell = ws_tx.cell(row=3, column=col_idx, value=h)
-        cell.font = font_th
-        cell.fill = fill_th
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-
-    t_row = 4
-    for t in transactions:
-        d_str = t["date"][:10] if isinstance(t.get("date"), str) else str(t.get("date", ""))[:10]
-        amt = float(t.get("amount", 0.0))
-        vals = [t.get("id"), d_str, (t.get("category") or "").capitalize(), amt, t.get("note") or ""]
-
-        is_even = (t_row % 2 == 0)
-        row_fill = fill_zebra if is_even else None
-
-        for c_idx, val in enumerate(vals, start=1):
-            cell = ws_tx.cell(row=t_row, column=c_idx, value=val)
-            cell.font = font_td
-            if row_fill:
-                cell.fill = row_fill
-            cell.border = thin_border
-            if c_idx == 4:
-                cell.number_format = '"Rs " #,##0.00'
-                cell.alignment = Alignment(horizontal="right")
-            elif c_idx == 1:
-                cell.alignment = Alignment(horizontal="center")
-            else:
-                cell.alignment = Alignment(horizontal="left")
-        t_row += 1
-
-    # Auto-adjust column widths
-    for sheet in (ws_summary, ws_tx):
-        for col in sheet.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                val_str = str(cell.value or "")
-                if len(val_str) > max_len:
-                    max_len = len(val_str)
-            sheet.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def generate_monthly_pdf(user_id: int, user_email: str, month: str) -> bytes:
-    """Generate a clean, professional PDF statement using ReportLab."""
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=36,
-    )
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "DocTitle",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=18,
-        leading=22,
-        textColor=colors.HexColor("#0F172A"),
-    )
-    meta_style = ParagraphStyle(
-        "MetaInfo",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        leading=13,
-        textColor=colors.HexColor("#64748B"),
-    )
-    section_style = ParagraphStyle(
-        "SectionHeading",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        leading=16,
-        textColor=colors.HexColor("#0F172A"),
-        spaceBefore=14,
-        spaceAfter=6,
-    )
-    cell_style = ParagraphStyle(
-        "TableCell",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=8,
-        leading=10,
-        textColor=colors.HexColor("#0F172A"),
-    )
-    cell_bold = ParagraphStyle(
-        "TableCellBold",
-        parent=cell_style,
-        fontName="Helvetica-Bold",
-    )
-
-    # 1. Fetch data
-    inc_data = get_income_summary(user_id=user_id, month=month)
-    total_income = inc_data["total"]
-    eff_budgets = get_effective_budgets(user_id=user_id, month=month)
-    cat_spend = spend_by_category(user_id=user_id, month=month)
-    transactions = get_transactions(user_id=user_id, month=month)
-    total_spent = sum(cat_spend.values())
-    net_savings = total_income - total_spent
-    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
-
-    elements = []
-
-    # Title & Metadata
-    elements.append(Paragraph("ABT — Monthly Financial Statement", title_style))
-    elements.append(Paragraph(
-        f"Period: <b>{month}</b> &nbsp;|&nbsp; Account: <b>{user_email}</b> &nbsp;|&nbsp; Generated: <b>{datetime.now().strftime('%Y-%m-%d %H:%M')}</b>",
-        meta_style,
-    ))
-    elements.append(Spacer(1, 10))
-
-    # KPI Table (Income, Expenses, Net Savings, Rate)
-    kpi_data = [
-        [
-            Paragraph("<b>Total Income</b>", cell_style),
-            Paragraph("<b>Total Expenses</b>", cell_style),
-            Paragraph("<b>Net Savings</b>", cell_style),
-            Paragraph("<b>Savings Rate</b>", cell_style),
-        ],
-        [
-            Paragraph(f"<b>Rs {total_income:,.0f}</b>", cell_bold),
-            Paragraph(f"<b>Rs {total_spent:,.0f}</b>", cell_bold),
-            Paragraph(f"<b>Rs {net_savings:,.0f}</b>", cell_bold),
-            Paragraph(f"<b>{savings_rate:.1f}%</b>", cell_bold),
-        ],
-    ]
-    kpi_table = Table(kpi_data, colWidths=[135, 135, 135, 135])
-    kpi_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-        ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor("#F8FAFC")),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor("#CBD5E1")),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(kpi_table)
-
-    # Category Breakdown Table
-    elements.append(Paragraph("Category Breakdown & Budgets", section_style))
-    cat_rows = [[
-        Paragraph("<b>Category</b>", cell_bold),
-        Paragraph("<b>Effective Budget</b>", cell_bold),
-        Paragraph("<b>Actual Spent</b>", cell_bold),
-        Paragraph("<b>Remaining</b>", cell_bold),
-        Paragraph("<b>% Used</b>", cell_bold),
-    ]]
-
-    all_cats = sorted(set(list(eff_budgets.keys()) + list(cat_spend.keys())))
-    total_eff_budget = 0.0
-
-    for cat in all_cats:
-        b_info = eff_budgets.get(cat, {})
-        eff_b = b_info.get("effective_budget", 0.0)
-        spent = cat_spend.get(cat, 0.0)
-        rem = eff_b - spent if eff_b > 0 else 0.0
-        pct = (spent / eff_b * 100) if eff_b > 0 else 0.0
-        if eff_b > 0:
-            total_eff_budget += eff_b
-
-        cat_rows.append([
-            Paragraph(cat.capitalize(), cell_style),
-            Paragraph(f"Rs {eff_b:,.0f}" if eff_b > 0 else "—", cell_style),
-            Paragraph(f"Rs {spent:,.0f}", cell_style),
-            Paragraph(f"Rs {rem:,.0f}" if eff_b > 0 else "—", cell_style),
-            Paragraph(f"{pct:.0f}%" if eff_b > 0 else "—", cell_style),
-        ])
-
-    # Totals row
-    cat_rows.append([
-        Paragraph("<b>Total</b>", cell_bold),
-        Paragraph(f"<b>Rs {total_eff_budget:,.0f}</b>", cell_bold),
-        Paragraph(f"<b>Rs {total_spent:,.0f}</b>", cell_bold),
-        Paragraph(f"<b>Rs {total_eff_budget - total_spent:,.0f}</b>", cell_bold),
-        Paragraph(f"<b>{(total_spent / total_eff_budget * 100):.0f}%</b>" if total_eff_budget > 0 else "—", cell_bold),
-    ])
-
-    cat_table = Table(cat_rows, colWidths=[140, 100, 100, 100, 100])
-    cat_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#0F172A")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.HexColor("#0F172A")),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor("#CBD5E1")),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-    ]))
-    elements.append(cat_table)
-
-    # Transactions List Table
-    elements.append(Paragraph("Transactions Log", section_style))
-    tx_rows = [[
-        Paragraph("<b>Date</b>", cell_bold),
-        Paragraph("<b>Category</b>", cell_bold),
-        Paragraph("<b>Amount</b>", cell_bold),
-        Paragraph("<b>Note</b>", cell_bold),
-    ]]
-
-    for t in transactions[:40]:  # Limit to 40 most recent for clean single/double page format
-        d_str = t["date"][:10] if isinstance(t.get("date"), str) else str(t.get("date", ""))[:10]
-        amt = float(t.get("amount", 0.0))
-        tx_rows.append([
-            Paragraph(d_str, cell_style),
-            Paragraph((t.get("category") or "").capitalize(), cell_style),
-            Paragraph(f"Rs {amt:,.0f}", cell_style),
-            Paragraph(t.get("note") or "—", cell_style),
-        ])
-
-    if len(transactions) > 40:
-        tx_rows.append([
-            Paragraph(f"<i>...and {len(transactions) - 40} more transactions (see Excel export for full log)</i>", cell_style),
-            Paragraph("", cell_style),
-            Paragraph("", cell_style),
-            Paragraph("", cell_style),
-        ])
-
-    tx_table = Table(tx_rows, colWidths=[80, 100, 90, 270])
-    tx_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 3),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#F1F5F9")),
-        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-    ]))
-    elements.append(tx_table)
-
-    doc.build(elements)
-    return buf.getvalue()
-
-
-# ======================================================================
 # USERNAME & AVATAR
 # ======================================================================
 
@@ -3193,6 +2917,28 @@ def get_user_display(user_id: int) -> dict:
         d = dict(row)
         d["needs_username"] = not bool(d.get("username"))
         return d
+
+
+def search_users_by_username(query: str, exclude_user_id: int, limit: int = 10) -> list[dict]:
+    """Case-insensitive partial match on username field, excluding requesting user (max 10 results)."""
+    clean_q = (query or "").strip()
+    if not clean_q:
+        return []
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, username, avatar_id
+            FROM users
+            WHERE username IS NOT NULL
+              AND username ILIKE %s
+              AND id != %s
+            ORDER BY username ASC
+            LIMIT %s
+            """,
+            (f"%{clean_q}%", exclude_user_id, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
 
 
 # ======================================================================
@@ -3402,136 +3148,8 @@ def check_duplicate_expense(user_id: int, amount: float, category: str = "", not
     return None
 
 
-# ======================================================================
-# UNDO SYSTEM
-# ======================================================================
-
-def store_undo_state(user_id: int, action_type: str, entity_type: str, entity_id: int, previous_state: dict | None) -> None:
-    """Store the last reversible action for a user. Only keeps the most recent one."""
-    import json
-    with get_db_cursor() as cur:
-        # Delete all previous undo entries for this user (only keep latest)
-        cur.execute("DELETE FROM undo_log WHERE user_id = %s", (user_id,))
-        cur.execute(
-            """
-            INSERT INTO undo_log (user_id, action_type, entity_type, entity_id, previous_state)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (user_id, action_type, entity_type, entity_id,
-             json.dumps(previous_state) if previous_state else None),
-        )
-
-
-def execute_undo(user_id: int) -> str:
-    """Execute undo of the last reversible action. Expires after 10 minutes."""
-    import json
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, action_type, entity_type, entity_id, previous_state, created_at
-            FROM undo_log
-            WHERE user_id = %s
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (user_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return "Nothing to undo."
-
-        created = row["created_at"]
-        if hasattr(created, "timestamp"):
-            import time
-            age = time.time() - created.timestamp()
-        else:
-            age = 0
-        if age > 600:  # 10 minutes
-            cur.execute("DELETE FROM undo_log WHERE id = %s", (row["id"],))
-            return "The undo window has expired (10 minutes). Nothing to undo."
-
-        action = row["action_type"]
-        entity = row["entity_type"]
-        eid = row["entity_id"]
-        prev = json.loads(row["previous_state"]) if row["previous_state"] else None
-
-        result_msg = "Nothing to undo."
-
-        if entity == "transaction":
-            if action == "log":
-                # Undo a log = delete the transaction
-                cur.execute(
-                    "DELETE FROM transactions WHERE id = %s AND user_id = %s",
-                    (eid, user_id),
-                )
-                if cur.rowcount > 0:
-                    result_msg = f"Undone -- removed the last logged expense (Rs {prev['amount']:.0f} under {prev['category']})." if prev else "Undone -- removed the last logged expense."
-                else:
-                    result_msg = "Could not undo -- the transaction may have already been deleted."
-            elif action == "update" and prev:
-                # Undo an update = restore previous values
-                cur.execute(
-                    """
-                    UPDATE transactions
-                    SET amount = %s, category = %s, note = %s
-                    WHERE id = %s AND user_id = %s
-                    """,
-                    (prev.get("amount"), prev.get("category"), prev.get("note", ""), eid, user_id),
-                )
-                result_msg = f"Undone -- restored transaction to Rs {float(prev['amount']):.0f} under {prev['category']}."
-            elif action == "delete" and prev:
-                # Undo a delete = re-insert the transaction
-                cur.execute(
-                    """
-                    INSERT INTO transactions (id, user_id, amount, category, note, date)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                    """,
-                    (eid, user_id, prev.get("amount"), prev.get("category"),
-                     prev.get("note", ""), prev.get("date")),
-                )
-                result_msg = f"Undone -- restored deleted expense of Rs {float(prev['amount']):.0f} under {prev['category']}."
-
-        # Remove the used undo entry
-        cur.execute("DELETE FROM undo_log WHERE id = %s", (row["id"],))
-
-    return result_msg
-
-
-def get_undo_status(user_id: int) -> dict:
-    """Check if undo is available for this user."""
-    import json, time
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT action_type, entity_type, entity_id, previous_state, created_at
-            FROM undo_log WHERE user_id = %s
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (user_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return {"available": False}
-        created = row["created_at"]
-        age = time.time() - created.timestamp() if hasattr(created, "timestamp") else 0
-        if age > 600:
-            return {"available": False, "reason": "expired"}
-        prev = json.loads(row["previous_state"]) if row["previous_state"] else {}
-        return {
-            "available": True,
-            "action_type": row["action_type"],
-            "entity_type": row["entity_type"],
-            "entity_id": row["entity_id"],
-            "description": f"{row['action_type']} {row['entity_type']}",
-            "seconds_remaining": max(0, int(600 - age)),
-            "previous_amount": float(prev.get("amount", 0)) if prev.get("amount") else None,
-            "previous_category": prev.get("category"),
-        }
-
-
 def get_transaction_by_id(user_id: int, transaction_id: int) -> dict | None:
-    """Get a single transaction by ID, owned by user_id. Used for undo state capture."""
+    """Get a single transaction by ID, owned by user_id."""
     with get_db_cursor() as cur:
         cur.execute(
             "SELECT id, amount, category, note, date, merchant FROM transactions WHERE id = %s AND user_id = %s",
@@ -3920,9 +3538,8 @@ def get_dashboard_tier2(user_id: int) -> dict:
     t_health = time.perf_counter()
     print(f"[DASHBOARD_TIMING] Tier 2: Health score computed in {(t_health - t_start)*1000:.2f}ms", flush=True)
 
-    projections = get_overspending_projections(user_id)
+    projections = []
     t_proj = time.perf_counter()
-    print(f"[DASHBOARD_TIMING] Tier 2: Overspending projections computed in {(t_proj - t_health)*1000:.2f}ms", flush=True)
 
     # Discretionary spend potential savings
     month = current_month()
@@ -3980,12 +3597,8 @@ def clear_udhar(user_id: int) -> int:
 
 def clear_everything(user_id: int) -> dict:
     """Clear all user data except the account itself."""
-    from app.storage import delete_from_storage
     counts = {}
     with get_db_cursor() as cur:
-        # Get receipt paths to delete from storage
-        cur.execute("SELECT path FROM receipts WHERE user_id = %s", (user_id,))
-        receipt_paths = [r["path"] for r in cur.fetchall()]
         cur.execute("DELETE FROM receipts WHERE user_id = %s", (user_id,))
         counts["receipts"] = cur.rowcount
 
@@ -4013,39 +3626,20 @@ def clear_everything(user_id: int) -> dict:
         counts["budgets"] = cur.rowcount
         cur.execute("DELETE FROM user_profile WHERE user_id = %s", (user_id,))
 
-    if receipt_paths:
-        for p in receipt_paths:
-            try:
-                delete_from_storage(p)
-            except Exception:
-                pass
-
     return counts
 
 
 def delete_account(user_id: int) -> bool:
-    """Delete the entire user account and all associated files and data."""
-    from app.storage import delete_from_storage
-    receipt_paths = []
+    """Delete the entire user account and all associated data."""
     with get_db_cursor() as cur:
-        cur.execute("SELECT path FROM receipts WHERE user_id = %s", (user_id,))
-        receipt_paths = [r["path"] for r in cur.fetchall()]
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         deleted = cur.rowcount > 0
-
-    if deleted and receipt_paths:
-        for p in receipt_paths:
-            try:
-                delete_from_storage(p)
-            except Exception:
-                pass
 
     return deleted
 
 
 def export_all_data_json(user_id: int) -> dict:
     """Export all user data as a structured JSON dict for download."""
-    import json
     with get_db_cursor() as cur:
         cur.execute("SELECT id, email, username, avatar_id, created_at FROM users WHERE id = %s", (user_id,))
         user_row = cur.fetchone()
@@ -4061,7 +3655,6 @@ def export_all_data_json(user_id: int) -> dict:
     profile = get_user_profile(user_id=user_id)
     recurring = get_recurring_expenses(user_id=user_id)
     categories = get_user_categories(user_id=user_id)
-    receipts_list = get_receipts(user_id=user_id)
 
     return {
         "user": user_info,
@@ -4073,169 +3666,8 @@ def export_all_data_json(user_id: int) -> dict:
         "profile": profile,
         "recurring_expenses": recurring,
         "custom_categories": categories,
-        "receipts": receipts_list,
         "exported_at": datetime.now().isoformat(),
     }
-
-
-# ======================================================================
-# Tier 3 Features: Receipts, Import Caching, Udhar Nudge,
-# Cash-Flow Calendar, Overspending Projections, Web Push
-# ======================================================================
-
-def add_receipt(user_id: int, transaction_id: Optional[int], path: str, mime: str, size: int) -> dict:
-    """Record receipt metadata in Postgres."""
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO receipts (user_id, transaction_id, path, mime, size)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id, user_id, transaction_id, path, mime, size, created_at
-            """,
-            (user_id, transaction_id, path, mime, size),
-        )
-        row = cur.fetchone()
-        d = dict(row)
-        if hasattr(d.get("created_at"), "isoformat"):
-            d["created_at"] = d["created_at"].isoformat()
-        return d
-
-
-def get_receipts(user_id: int) -> list[dict]:
-    """List all receipts owned by user_id, joined with transaction info."""
-    from app.storage import get_signed_url
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT r.id, r.user_id, r.transaction_id, r.path, r.mime, r.size, r.created_at,
-                   t.amount, t.category, t.note, t.merchant, t.date as transaction_date
-            FROM receipts r
-            LEFT JOIN transactions t ON r.transaction_id = t.id
-            WHERE r.user_id = %s
-            ORDER BY r.created_at DESC
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            if hasattr(d.get("created_at"), "isoformat"):
-                d["created_at"] = d["created_at"].isoformat()
-            if hasattr(d.get("transaction_date"), "isoformat"):
-                d["transaction_date"] = d["transaction_date"].isoformat()
-            if d.get("amount") is not None:
-                d["amount"] = float(d["amount"])
-            d["signed_url"] = get_signed_url(d["path"])
-            result.append(d)
-        return result
-
-
-def get_receipt_by_id(user_id: int, receipt_id: int) -> Optional[dict]:
-    """Get a single receipt ensuring user ownership."""
-    from app.storage import get_signed_url
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, user_id, transaction_id, path, mime, size, created_at
-            FROM receipts
-            WHERE id = %s AND user_id = %s
-            """,
-            (receipt_id, user_id),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        if hasattr(d.get("created_at"), "isoformat"):
-            d["created_at"] = d["created_at"].isoformat()
-        d["signed_url"] = get_signed_url(d["path"])
-        return d
-
-
-def delete_receipt(user_id: int, receipt_id: int) -> Optional[str]:
-    """Delete receipt record from DB. Returns storage path so caller deletes storage file."""
-    with get_db_cursor() as cur:
-        cur.execute(
-            "SELECT path FROM receipts WHERE id = %s AND user_id = %s",
-            (receipt_id, user_id),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        path = row["path"]
-        cur.execute("DELETE FROM receipts WHERE id = %s", (receipt_id,))
-        return path
-
-
-def get_transaction_receipts(user_id: int, transaction_id: int) -> list[dict]:
-    """List receipts attached to a specific transaction."""
-    from app.storage import get_signed_url
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, user_id, transaction_id, path, mime, size, created_at
-            FROM receipts
-            WHERE transaction_id = %s AND user_id = %s
-            ORDER BY created_at DESC
-            """,
-            (transaction_id, user_id),
-        )
-        rows = cur.fetchall()
-        res = []
-        for r in rows:
-            d = dict(r)
-            if hasattr(d.get("created_at"), "isoformat"):
-                d["created_at"] = d["created_at"].isoformat()
-            d["signed_url"] = get_signed_url(d["path"])
-            res.append(d)
-        return res
-
-
-# ---------- Merchant Category Cache & Past Categorizations ----------
-
-def get_cached_merchant_category(normalized_merchant: str) -> Optional[str]:
-    """Get category for merchant from global cache."""
-    with get_db_cursor() as cur:
-        cur.execute(
-            "SELECT category FROM merchant_category_cache WHERE LOWER(normalized_merchant) = %s",
-            (normalized_merchant.lower().strip(),),
-        )
-        row = cur.fetchone()
-        return row["category"] if row else None
-
-
-def set_cached_merchant_category(normalized_merchant: str, category: str) -> None:
-    """Store category in merchant_category_cache."""
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO merchant_category_cache (normalized_merchant, category)
-            VALUES (%s, %s)
-            ON CONFLICT (normalized_merchant) DO UPDATE SET category = EXCLUDED.category
-            """,
-            (normalized_merchant.lower().strip(), category.strip()),
-        )
-
-
-def get_past_merchant_category(user_id: int, normalized_merchant: str) -> Optional[str]:
-    """Check user's past transactions for a matching merchant or note."""
-    norm = normalized_merchant.lower().strip()
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            SELECT category FROM transactions
-            WHERE user_id = %s AND (
-                LOWER(COALESCE(merchant, '')) = %s
-                OR LOWER(COALESCE(note, '')) LIKE %s
-            )
-            ORDER BY date DESC
-            LIMIT 1
-            """,
-            (user_id, norm, f"%{norm}%"),
-        )
-        row = cur.fetchone()
-        return row["category"] if row else None
 
 
 # ---------- Udhar Reminder Nudge ----------
@@ -4481,65 +3913,36 @@ def get_cashflow_calendar(user_id: int, month_str: Optional[str] = None) -> dict
 
 # ---------- Overspending Projections ----------
 
-def get_overspending_projections(user_id: int) -> list[dict]:
-    """Calculate projected month-end spend per category.
-    Formula: projected = spent / days_elapsed * days_in_month
-    Only shows warning when projected > budget AND days_elapsed >= 7."""
-    today = date.today()
-    days_elapsed = max(1, today.day)
-    days_in_month = calendar.monthrange(today.year, today.month)[1]
-
-    # Condition: at least 7 days of data must exist
-    if days_elapsed < 7:
-        return []
-
-    budgets = get_budgets(user_id)
-    if not budgets:
-        return []
-
-    spend_map = spend_by_category(user_id, current_month())
-    alerts = []
-
-    for b in budgets:
-        cat = b["category"]
-        limit = float(b["monthly_limit"])
-        spent = float(spend_map.get(cat, 0.0))
-
-        if limit <= 0:
-            continue
-
-        projected = (spent / days_elapsed) * days_in_month
-        if projected > limit:
-            excess = round(projected - limit)
-            alerts.append({
-                "category": cat,
-                "limit": limit,
-                "spent": spent,
-                "projected": round(projected),
-                "excess": excess,
-                "days_elapsed": days_elapsed,
-                "days_in_month": days_in_month,
-                "message": f"At this pace you will exceed {cat} by about Rs {excess}.",
-            })
-
-    return alerts
-
-
 def get_overspending_projections_text(user_id: int) -> str:
     """Formatted deterministic text for agent tool."""
     today = date.today()
     days_elapsed = max(1, today.day)
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
 
     if days_elapsed < 7:
         return f"Only {days_elapsed} days have elapsed this month. Overspending projections require at least 7 days of data."
 
-    alerts = get_overspending_projections(user_id)
-    if not alerts:
+    budgets = get_budgets(user_id)
+    if not budgets:
         return "You are currently within your budget limits for all categories based on current spending pace."
 
+    spend_map = spend_by_category(user_id, current_month())
     lines = ["Budget Pace Alerts:"]
-    for a in alerts:
-        lines.append(f"- {a['message']} (Limit: Rs {a['limit']:.0f}, Spent: Rs {a['spent']:.0f}, Projected: Rs {a['projected']:.0f})")
+    found = False
+    for b in budgets:
+        cat = b["category"]
+        limit = float(b["monthly_limit"])
+        spent = float(spend_map.get(cat, 0.0))
+        if limit <= 0:
+            continue
+        projected = (spent / days_elapsed) * days_in_month
+        if projected > limit:
+            found = True
+            excess = round(projected - limit)
+            lines.append(f"- At this pace you will exceed {cat} by about Rs {excess}. (Limit: Rs {limit:.0f}, Spent: Rs {spent:.0f}, Projected: Rs {round(projected):.0f})")
+
+    if not found:
+        return "You are currently within your budget limits for all categories based on current spending pace."
     return "\n".join(lines)
 
 

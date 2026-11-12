@@ -245,6 +245,118 @@ class LLMPool:
         logger.error("All %d LLM attempts exhausted. Last error: %s", self._MAX_ATTEMPTS, last_error)
         return self._FRIENDLY_ERROR
 
+    def invoke_vision(
+        self,
+        image_base64: str,
+        prompt: str,
+        mime_type: str = "image/jpeg",
+    ) -> str:
+        """Send a vision request to Groq using multi-key failover.
+
+        Primary model: "llama-3.2-11b-vision-preview"
+        Fallback model: "llava-v1.5-7b-4096-tokens" (plus meta-llama/llama-4-scout-17b-16e-instruct if legacy IDs are retired)
+        Raises RuntimeError if vision model is unavailable across all keys.
+        """
+        from langchain_core.messages import HumanMessage
+
+        vision_models = [
+            "llama-3.2-11b-vision-preview",
+            "llava-v1.5-7b-4096-tokens",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+        ]
+
+        if image_base64.startswith("data:"):
+            data_url = image_base64
+        else:
+            data_url = f"data:{mime_type};base64,{image_base64}"
+
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]
+        )
+
+        groq_slots = [s for s in self._slots if s.provider == "groq" and s.is_available()]
+        if not groq_slots:
+            # If all slots are cooling down, try any non-disabled groq slot as last resort
+            groq_slots = [s for s in self._slots if s.provider == "groq" and not s.disabled]
+
+        if not groq_slots:
+            raise RuntimeError("No available Groq API keys for vision request.")
+
+        last_error: Exception | None = None
+
+        for model_name in vision_models:
+            attempts = 0
+            model_unavailable = False
+
+            for slot in groq_slots:
+                if attempts >= self._MAX_ATTEMPTS:
+                    break
+                if not slot.is_available() and len(groq_slots) > 1:
+                    continue
+
+                slot.last_used = time.time()
+                attempts += 1
+
+                try:
+                    vision_llm = ChatGroq(
+                        model=model_name,
+                        api_key=slot.key,
+                        temperature=0.1,
+                        max_tokens=1024,
+                    )
+                    response = vision_llm.invoke([message])
+                    content = getattr(response, "content", None)
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                    raise RuntimeError("Empty response from Groq vision model")
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).lower()
+                    err_type = self._classify_error(e)
+                    logger.warning(
+                        "Vision call (%s) failed on slot %s (%s), attempt %d/%d: %s [%s]",
+                        model_name, slot.slot_name, _mask_key(slot.key),
+                        attempts, self._MAX_ATTEMPTS, type(e).__name__, err_type,
+                    )
+
+                    # Check if the model itself is decommissioned, not found, or invalid
+                    if any(
+                        phrase in err_str
+                        for phrase in (
+                            "model_decommissioned",
+                            "decommissioned",
+                            "model_not_found",
+                            "does not exist",
+                            "not supported",
+                            "invalid model",
+                        )
+                    ):
+                        model_unavailable = True
+                        break
+
+                    if err_type == "rate_limit":
+                        retry_after = self._extract_retry_after(e)
+                        slot.cool_down(retry_after)
+                    elif err_type == "auth_fail":
+                        slot.disable()
+                    elif err_type == "timeout":
+                        slot.cool_down(30.0)
+                    elif err_type == "non_retryable":
+                        model_unavailable = True
+                        break
+                    else:
+                        slot.cool_down(15.0)
+
+            if not model_unavailable and attempts >= self._MAX_ATTEMPTS:
+                # Exhausted key retries on this model; try fallback model once before giving up
+                continue
+
+        logger.error("All Groq vision models and key attempts failed. Last error: %s", last_error)
+        raise RuntimeError(f"Groq vision unavailable: {last_error}")
+
     def get_pool_status(self) -> list[dict]:
         """Return the health state, cooldown, and last used time for each configured key slot."""
         from datetime import datetime, timezone
